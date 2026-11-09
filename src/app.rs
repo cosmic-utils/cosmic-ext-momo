@@ -203,6 +203,7 @@ pub enum Message {
     Fetch(Vec<String>),
     CacheStatus(Status),
     CacheNotification(Notification),
+    RemoveNotifications(Vec<String>),
     CacheRelationship(megalodon::entities::Relationship),
     CacheRelationships(Vec<megalodon::entities::Relationship>),
     CacheHandle(String, Handle),
@@ -1021,6 +1022,7 @@ impl Application for AppModel {
                 tasks.push(self.home.update(message));
             }
             Message::Notifications(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.notifications.update(message));
             }
             Message::Explore(message) => {
@@ -1318,6 +1320,10 @@ impl Application for AppModel {
             }
             Message::CacheStatus(status) => {
                 self.cache.insert_status(status.clone());
+            }
+            Message::RemoveNotifications(ids) => {
+                self.cache.notifications.retain(|id, _| !ids.contains(id));
+                self.cache.dirty = true;
             }
             Message::CacheNotification(notification) => {
                 self.cache.insert_notification(notification.clone());

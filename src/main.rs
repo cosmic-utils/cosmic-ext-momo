@@ -12,6 +12,7 @@ mod i18n;
 mod persistence;
 mod settings;
 mod streaming;
+mod ui;
 
 fn main() -> Result<(), Error> {
     settings::init();
