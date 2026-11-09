@@ -22,18 +22,15 @@ pub fn timeline(client: Client, request: u64, cursor: Option<String>) -> Subscri
         stream::channel(
             1,
             move |mut output: futures_channel::mpsc::Sender<Message>| async move {
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                let result = crate::client::within_timeout(
                     client.get_notifications(Some(&GetNotificationsInputOptions {
                         limit: Some(30),
                         max_id: cursor,
                         ..Default::default()
                     })),
+                    fl!("activity-load-error"),
                 )
                 .await
-                .ok()
-                .and_then(Result::ok)
-                .ok_or_else(|| fl!("activity-load-error"))
                 .map(|response| {
                     let next = response
                         .header

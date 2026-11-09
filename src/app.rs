@@ -1649,7 +1649,7 @@ impl Application for AppModel {
                     if editing {
                         let text = self.dialog_editor.text();
                         if let Some(state) = self.active_compose_mut() {
-                            state.text = Some(text);
+                            state.text = text;
                             state.changed();
                         }
                         self.persist_active_draft();
@@ -1755,8 +1755,7 @@ impl AppModel {
             return cosmic::task::message(Message::Error(fl!("compose-account-loading")));
         }
         self.compose_request += 1;
-        self.dialog_editor =
-            widget::text_editor::Content::with_text(state.text.as_deref().unwrap_or(""));
+        self.dialog_editor = widget::text_editor::Content::with_text(&state.text);
         self.dialog_pages
             .retain(|dialog| !matches!(dialog, Dialog::Drafts));
         self.dialog_pages.push_front(Dialog::Compose(state));

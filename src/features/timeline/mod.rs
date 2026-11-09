@@ -92,7 +92,7 @@ pub enum Message {
     PrependStatus(Status),
     DeleteStatus(String),
     Status(status::Message),
-    LoadMore(bool),
+    LoadMore,
 }
 
 impl Timeline {
@@ -139,10 +139,7 @@ impl Timeline {
             if !self.statuses.contains(&status.id) {
                 self.statuses.push_back(status.id.clone());
             }
-            tasks.push(cosmic::task::message(app::Message::Fetch(
-                cache::extract_status_images(&status),
-            )));
-            tasks.push(cosmic::task::message(app::Message::CacheStatus(status)));
+            tasks.push(cache_status(status));
         }
         Task::batch(tasks)
     }
@@ -259,8 +256,7 @@ impl Timeline {
             );
         } else if self.has_loaded && self.more && self.error.is_none() {
             content = content.push(
-                widget::button::standard(fl!("reading-load-more"))
-                    .on_press(Message::LoadMore(true)),
+                widget::button::standard(fl!("reading-load-more")).on_press(Message::LoadMore),
             );
         } else if self.has_loaded && self.error.is_none() && !self.statuses.is_empty() {
             content = content.push(widget::text::caption(fl!("feed-end")));
@@ -309,7 +305,7 @@ impl Timeline {
             Message::SetClient(mastodon) => self.mastodon = mastodon,
             Message::Refresh if !self.loading => self.begin_load(false),
             Message::Retry if !self.loading => self.begin_load(self.older),
-            Message::LoadMore(true) if !self.loading && self.more => self.begin_load(true),
+            Message::LoadMore if !self.loading && self.more => self.begin_load(true),
             Message::PublishNew => {
                 tasks.push(self.top());
                 while let Some(id) = self.incoming.pop_back() {
@@ -325,10 +321,7 @@ impl Timeline {
                 if !self.statuses.contains(&post.id) && !self.incoming.contains(&post.id) {
                     self.incoming.push_front(post.id.clone());
                 }
-                tasks.push(cosmic::task::message(app::Message::Fetch(
-                    cache::extract_status_images(&post),
-                )));
-                tasks.push(cosmic::task::message(app::Message::CacheStatus(post)));
+                tasks.push(cache_status(post));
             }
             Message::PageLoaded(request, result) if request == self.request => {
                 self.loading = false;
@@ -352,10 +345,7 @@ impl Timeline {
                             if !self.statuses.contains(&post.id) {
                                 self.statuses.push_back(post.id.clone());
                             }
-                            tasks.push(cosmic::task::message(app::Message::Fetch(
-                                cache::extract_status_images(&post),
-                            )));
-                            tasks.push(cosmic::task::message(app::Message::CacheStatus(post)));
+                            tasks.push(cache_status(post));
                         }
                     }
                 }
@@ -392,20 +382,24 @@ impl Timeline {
         // network fetch to refresh in the background — checking emptiness
         // here would skip that fetch entirely until the user scrolls.
         if (!self.has_loaded && self.error.is_none()) || self.loading {
-            Subscription::batch(vec![fetch::timeline(
+            fetch::timeline(
                 self.mastodon.clone(),
                 self.kind.clone(),
-                if self.older {
-                    self.max_id.clone()
-                } else {
-                    None
-                },
+                self.max_id.clone().filter(|_| self.older),
                 self.request,
-            )])
+            )
         } else {
             Subscription::none()
         }
     }
+}
+
+/// Queue a status's images for download and store it in the shared cache.
+fn cache_status(status: Status) -> Task<app::Message> {
+    Task::batch([
+        cosmic::task::message(app::Message::Fetch(cache::extract_status_images(&status))),
+        cosmic::task::message(app::Message::CacheStatus(status)),
+    ])
 }
 
 #[cfg(test)]

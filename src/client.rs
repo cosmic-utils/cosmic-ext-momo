@@ -4,6 +4,18 @@ use std::sync::Arc;
 
 use megalodon::Megalodon;
 
+/// Await a request for at most 30 seconds, mapping a timeout or failure to `error`.
+pub async fn within_timeout<T, E>(
+    request: impl std::future::Future<Output = Result<T, E>>,
+    error: String,
+) -> Result<T, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), request)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(error)
+}
+
 /// Wraps a megalodon client together with the connection details we need to
 /// track ourselves (megalodon's clients don't expose their base URL or token).
 #[derive(Clone)]
@@ -189,6 +201,30 @@ impl std::fmt::Debug for Session {
     }
 }
 
+/// Read the server-provided pagination cursor without assuming numeric IDs.
+pub fn next_cursor(header: &str) -> Option<String> {
+    header.split(',').find_map(|part| {
+        if !part
+            .split(';')
+            .skip(1)
+            .any(|attribute| attribute.trim() == "rel=\"next\"" || attribute.trim() == "rel=next")
+        {
+            return None;
+        }
+        let url = part
+            .split(';')
+            .next()?
+            .trim()
+            .strip_prefix('<')?
+            .strip_suffix('>')?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .query_pairs()
+            .find(|(key, _)| key == "max_id")
+            .map(|(_, value)| value.into_owned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,28 +281,4 @@ mod tests {
         first.acct = "alice@example.org".into();
         assert_eq!(first.label(), "@alice@example.org · https://example.org");
     }
-}
-
-/// Read the server-provided pagination cursor without assuming numeric IDs.
-pub fn next_cursor(header: &str) -> Option<String> {
-    header.split(',').find_map(|part| {
-        if !part
-            .split(';')
-            .skip(1)
-            .any(|attribute| attribute.trim() == "rel=\"next\"" || attribute.trim() == "rel=next")
-        {
-            return None;
-        }
-        let url = part
-            .split(';')
-            .next()?
-            .trim()
-            .strip_prefix('<')?
-            .strip_suffix('>')?;
-        reqwest::Url::parse(url)
-            .ok()?
-            .query_pairs()
-            .find(|(key, _)| key == "max_id")
-            .map(|(_, value)| value.into_owned())
-    })
 }

@@ -76,10 +76,11 @@ impl Cache {
     }
 
     pub fn insert_notification(&mut self, notification: Notification) {
+        let status = notification.status.clone();
         self.notifications
-            .insert(notification.id.to_string(), notification.clone());
-        if let Some(status) = notification.status {
-            self.insert_status(status.clone());
+            .insert(notification.id.to_string(), notification);
+        if let Some(status) = status {
+            self.insert_status(status);
         }
         self.dirty = true;
     }

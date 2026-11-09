@@ -25,22 +25,20 @@ impl Store {
         Self { root: Some(root) }
     }
     fn directory(&self, account: &str) -> Result<PathBuf, String> {
-        let key: String = account
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        if key.is_empty() {
-            return Err(fl!("compose-storage-error"));
-        }
-        let mut directory = self
+        let root = self
             .root
             .as_ref()
-            .ok_or_else(|| fl!("compose-storage-error"))?
-            .clone();
-        for chunk in key.as_bytes().chunks(128) {
-            // Hex encoding contains only ASCII bytes.
-            directory.push(std::str::from_utf8(chunk).map_err(|_| fl!("compose-storage-error"))?);
+            .filter(|_| !account.is_empty())
+            .ok_or_else(|| fl!("compose-storage-error"))?;
+        let mut directory = root.clone();
+        // Split to stay under filesystem name-length limits.
+        for chunk in account.as_bytes().chunks(64) {
+            directory.push(
+                chunk
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            );
         }
         Ok(directory)
     }
@@ -202,7 +200,7 @@ fn private_file(path: &Path) -> std::io::Result<fs::File> {
     }
     options.open(path)
 }
-pub fn image_format(header: &[u8]) -> Option<(&'static str, &'static str)> {
+fn image_format(header: &[u8]) -> Option<(&'static str, &'static str)> {
     if header.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("image/png", "png"))
     } else if header.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -213,5 +211,24 @@ pub fn image_format(header: &[u8]) -> Option<(&'static str, &'static str)> {
         Some(("image/webp", "webp"))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_directory_is_hex_split_below_name_limits() {
+        let store = Store::at(PathBuf::from("/drafts"));
+        let directory = store.directory(&"a".repeat(100)).unwrap();
+        let names: Vec<_> = directory
+            .strip_prefix("/drafts")
+            .unwrap()
+            .iter()
+            .map(|name| name.len())
+            .collect();
+        assert_eq!(names, [128, 72]);
+        assert!(store.directory("").is_err());
     }
 }

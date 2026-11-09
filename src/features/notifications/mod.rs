@@ -72,6 +72,14 @@ pub enum Message {
     FollowDecision(String, String, bool),
     FollowFinished(String, Result<Relationship, String>),
 }
+fn cache_notification(notification: Notification) -> Task<app::Message> {
+    Task::batch([
+        cosmic::task::message(app::Message::Fetch(cache::extract_notification_images(
+            &notification,
+        ))),
+        cosmic::task::message(app::Message::CacheNotification(notification)),
+    ])
+}
 impl Notifications {
     pub fn new(mastodon: Client) -> Self {
         let mut tabs = segmented_button::SingleSelectModel::default();
@@ -129,12 +137,7 @@ impl Notifications {
                 self.max_id = Some(notification.id.clone());
                 self.notifications.push_back(notification.id.clone());
             }
-            tasks.push(cosmic::task::message(app::Message::Fetch(
-                cache::extract_notification_images(&notification),
-            )));
-            tasks.push(cosmic::task::message(app::Message::CacheNotification(
-                notification,
-            )));
+            tasks.push(cache_notification(notification));
         }
         Task::batch(tasks)
     }
@@ -148,7 +151,7 @@ impl Notifications {
             .chain(&self.notifications)
             .filter_map(|id| cache.notifications.get(id).cloned())
             .collect();
-        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        items.sort_by_key(|n| std::cmp::Reverse(n.created_at));
         items.dedup_by(|a, b| a.id == b.id);
         crate::persistence::save_notification_snapshot(&self.mastodon.cache_key(), &items);
     }
@@ -184,7 +187,7 @@ impl Notifications {
             tab,
             self.filter,
         );
-        let any = self.notifications.iter().chain(&self.new).next().is_some();
+        let any = !self.notifications.is_empty() || !self.new.is_empty();
         let refreshing = self.loading && self.load_kind == LoadKind::Refresh;
         let mut content = widget::column![
             widget::row![
@@ -361,12 +364,7 @@ impl Notifications {
                 {
                     self.new.push_front(notification.id.clone());
                 }
-                tasks.push(cosmic::task::message(app::Message::Fetch(
-                    cache::extract_notification_images(&notification),
-                )));
-                tasks.push(cosmic::task::message(app::Message::CacheNotification(
-                    notification,
-                )));
+                tasks.push(cache_notification(notification));
             }
             Message::Refresh if !self.loading && !self.clearing => {
                 self.start_load(LoadKind::Refresh)
@@ -410,12 +408,7 @@ impl Notifications {
                                 self.notifications.push_back(notification.id.clone());
                             }
                             self.new.retain(|id| id != &notification.id);
-                            tasks.push(cosmic::task::message(app::Message::Fetch(
-                                cache::extract_notification_images(&notification),
-                            )));
-                            tasks.push(cosmic::task::message(app::Message::CacheNotification(
-                                notification,
-                            )));
+                            tasks.push(cache_notification(notification));
                         }
                     }
                     Err(error) => self.error = Some(error),
@@ -455,15 +448,12 @@ impl Notifications {
                     .collect();
                 let client = self.mastodon.clone();
                 tasks.push(cosmic::task::future(async move {
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
+                    let result = crate::client::within_timeout(
                         client.dismiss_notifications(),
+                        fl!("activity-clear-error"),
                     )
                     .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .map(|_| ())
-                    .ok_or_else(|| fl!("activity-clear-error"));
+                    .map(|_| ());
                     app::Message::Notifications(Message::Cleared(ids, result))
                 }));
             }
@@ -475,9 +465,6 @@ impl Notifications {
                         self.confirm_clear = false;
                         self.max_id = None;
                         self.more = false;
-                        self.has_loaded = true;
-                        self.loading = false;
-                        self.request += 1;
                         self.error = None;
                         tasks.push(cosmic::task::message(app::Message::RemoveNotifications(
                             ids,
@@ -499,15 +486,12 @@ impl Notifications {
                     let results = futures_util::future::join_all(ids.into_iter().map(|id| {
                         let client = client.clone();
                         async move {
-                            let result = tokio::time::timeout(
-                                std::time::Duration::from_secs(30),
+                            let result = crate::client::within_timeout(
                                 client.dismiss_notification(id.clone()),
+                                fl!("activity-dismiss-error"),
                             )
                             .await
-                            .ok()
-                            .and_then(Result::ok)
-                            .map(|_| ())
-                            .ok_or_else(|| fl!("activity-dismiss-error"));
+                            .map(|_| ());
                             (id, result)
                         }
                     }))
@@ -538,18 +522,17 @@ impl Notifications {
                 self.action_errors.remove(&id);
                 let client = self.mastodon.clone();
                 tasks.push(cosmic::task::future(async move {
-                    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    let request = async {
                         if accept {
                             client.accept_follow_request(account).await
                         } else {
                             client.reject_follow_request(account).await
                         }
-                    })
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .map(|response| response.json)
-                    .ok_or_else(|| fl!("activity-request-error"));
+                    };
+                    let result =
+                        crate::client::within_timeout(request, fl!("activity-request-error"))
+                            .await
+                            .map(|response| response.json);
                     app::Message::Notifications(Message::FollowFinished(id, result))
                 }));
             }
@@ -557,7 +540,7 @@ impl Notifications {
                 self.pending.remove(&id);
                 match result {
                     Ok(relationship) => {
-                        self.remove(&[id.clone()]);
+                        self.remove(std::slice::from_ref(&id));
                         tasks.push(cosmic::task::message(app::Message::RemoveNotifications(
                             vec![id],
                         )));

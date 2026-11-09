@@ -25,7 +25,7 @@ fn page(ids: &[&str], cursor: &str, more: bool) -> fetch::Page {
 fn failures_preserve_posts_and_retry_the_same_page_with_a_new_request() {
     let mut feed = feed();
     let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1"], "cursor", true))));
-    let _ = feed.update(Message::LoadMore(true));
+    let _ = feed.update(Message::LoadMore);
     let failed = feed.request;
     let _ = feed.update(Message::PageLoaded(failed, Err("offline".into())));
     assert_eq!(feed.statuses, ["1".to_string()]);
@@ -49,7 +49,7 @@ fn refresh_restarts_pagination_and_stale_pages_cannot_replace_it() {
     ));
     assert_eq!(feed.statuses, ["2".to_string()]);
     assert_eq!(feed.max_id.as_deref(), Some("new-cursor"));
-    let _ = feed.update(Message::LoadMore(true));
+    let _ = feed.update(Message::LoadMore);
     let _ = feed.update(Message::PageLoaded(
         feed.request,
         Ok(page(&["2", "3"], "older-cursor", false)),
@@ -93,7 +93,7 @@ fn account_reset_clears_buffered_posts_errors_and_invalidates_previous_requests(
 fn repeated_pagination_cursor_stops_offering_duplicate_pages() {
     let mut feed = feed();
     let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1"], "cursor", true))));
-    let _ = feed.update(Message::LoadMore(true));
+    let _ = feed.update(Message::LoadMore);
     let _ = feed.update(Message::PageLoaded(
         feed.request,
         Ok(page(&["1"], "cursor", true)),

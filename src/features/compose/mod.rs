@@ -87,7 +87,7 @@ pub struct Media {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
-    pub text: Option<String>,
+    pub text: String,
     pub in_reply_to_id: Option<String>,
     pub edit_id: Option<String>,
     pub content_warning: bool,
@@ -124,7 +124,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            text: Some(String::new()),
+            text: String::new(),
             in_reply_to_id: None,
             edit_id: None,
             content_warning: false,
@@ -178,8 +178,7 @@ impl State {
         if !me.is_some_and(|me| me.id == post.account.id) {
             recipients.push(reading::html::full_acct(&post.account));
         }
-        let mut recipient_ids = std::collections::HashSet::new();
-        recipient_ids.insert(post.account.id.clone());
+        let mut recipient_ids = std::collections::HashSet::from([post.account.id.clone()]);
         for mention in &post.mentions {
             if !recipient_ids.insert(mention.id.clone()) || me.is_some_and(|me| me.id == mention.id)
             {
@@ -202,18 +201,16 @@ impl State {
                 recipients.push(acct);
             }
         }
-        state.text = Some(if recipients.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", recipients.join(" "))
-        });
+        if !recipients.is_empty() {
+            state.text = format!("{} ", recipients.join(" "));
+        }
         state
     }
     pub fn edit(post: &Status, source: megalodon::entities::StatusSource) -> Self {
         let mut state = Self::default();
         state.edit_id = Some(post.id.clone());
         state.in_reply_to_id = post.in_reply_to_id.clone();
-        state.text = Some(source.text);
+        state.text = source.text;
         state.spoiler_text = source.spoiler_text;
         state.content_warning = !state.spoiler_text.is_empty();
         state.visibility = post.visibility.clone();
@@ -249,7 +246,7 @@ impl State {
             && self.published_id.is_none()
     }
     pub fn editable(&self) -> bool {
-        !self.busy() && self.attempted_at.is_none() && self.published_id.is_none()
+        self.accepts_edits() && !self.media.iter().any(|media| media.uploading)
     }
     pub fn retry_safe(&self) -> bool {
         self.edit_id.is_some()
@@ -280,22 +277,22 @@ impl State {
                 })
             })
     }
+    pub fn characters(&self, limits: &Limits) -> usize {
+        let warning = if self.content_warning {
+            &self.spoiler_text
+        } else {
+            ""
+        };
+        count::count(&self.text, warning, limits.reserved_url)
+    }
     pub fn valid(&self, limits: &Limits) -> bool {
-        let text = self.text.as_deref().unwrap_or("");
+        let text = &self.text;
         self.published_id.is_none()
             && (!text.trim().is_empty() || !self.media.is_empty() || self.has_poll)
             && !self.mixed_media()
             && !(self.has_poll && !self.media.is_empty())
             && self.media.len() <= limits.attachments
-            && count::count(
-                text,
-                if self.content_warning {
-                    &self.spoiler_text
-                } else {
-                    ""
-                },
-                limits.reserved_url,
-            ) <= limits.characters
+            && self.characters(limits) <= limits.characters
             && self.media.iter().all(|media| {
                 media.attachment.is_some()
                     && !media.uploading
@@ -308,7 +305,7 @@ impl State {
                 .is_none_or(|ceiling| visibility_rank(&self.visibility) >= visibility_rank(ceiling))
     }
     pub fn payload(&self) -> serde_json::Value {
-        let mut payload = serde_json::json!({"status":self.text.as_deref().unwrap_or(""), "spoiler_text":if self.content_warning { self.spoiler_text.as_str() } else { "" }, "sensitive":self.sensitive || self.content_warning});
+        let mut payload = serde_json::json!({"status":self.text, "spoiler_text":if self.content_warning { self.spoiler_text.as_str() } else { "" }, "sensitive":self.sensitive || self.content_warning});
         if self.edit_id.is_none() {
             payload["visibility"] = serde_json::json!(self.visibility);
             if let Some(id) = &self.in_reply_to_id {
@@ -507,16 +504,7 @@ pub fn view<'a>(
     } else {
         text_editor
     });
-    let remaining = limits.characters as i64
-        - count::count(
-            state.text.as_deref().unwrap_or(""),
-            if state.content_warning {
-                &state.spoiler_text
-            } else {
-                ""
-            },
-            limits.reserved_url,
-        ) as i64;
+    let remaining = limits.characters as i64 - state.characters(limits) as i64;
 
     let pane: cosmic::Element<'a, app::Message> = match tabs.active_data::<Pane>() {
         Some(Pane::Warning) => {
@@ -699,11 +687,7 @@ fn media_card<'a>(
     client: &crate::client::Client,
     store: &store::Store,
 ) -> cosmic::Element<'a, app::Message> {
-    let preview: cosmic::Element<'a, app::Message> = media
-        .stored_name
-        .as_ref()
-        .filter(|_| name_is_static_image(&media.name))
-        .and_then(|name| store.asset_path(&client.cache_key(), &state.id, name).ok())
+    let preview: cosmic::Element<'a, app::Message> = preview_path(state, media, client, store)
         .map(|path| {
             widget::image(path)
                 .width(72)
@@ -753,7 +737,7 @@ fn media_card<'a>(
 }
 
 pub fn draft_card<'a>(draft: &'a State) -> cosmic::Element<'a, app::Message> {
-    let text = draft.text.as_deref().unwrap_or("").trim();
+    let text = draft.text.trim();
     let title = if !draft.spoiler_text.trim().is_empty() && draft.content_warning {
         draft.spoiler_text.trim()
     } else {
@@ -814,12 +798,7 @@ pub fn alt_view<'a>(
     let id = media_id.to_string();
     let mut content = widget::column![].spacing(12);
     if let Some(media) = state.media.iter().find(|media| media.id == id) {
-        if let Some(path) = media
-            .stored_name
-            .as_ref()
-            .filter(|_| name_is_static_image(&media.name))
-            .and_then(|name| store.asset_path(&client.cache_key(), &state.id, name).ok())
-        {
+        if let Some(path) = preview_path(state, media, client, store) {
             content = content.push(widget::image(path).height(200));
         }
         let input = widget::text_input(fl!("compose-alt"), &media.description)
@@ -851,7 +830,19 @@ fn visibility_label(value: &StatusVisibility) -> String {
         StatusVisibility::Local => fl!("compose-local"),
     }
 }
-fn name_is_static_image(name: &str) -> bool {
-    let name = name.to_lowercase();
-    name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".jpeg")
+fn preview_path(
+    state: &State,
+    media: &Media,
+    client: &crate::client::Client,
+    store: &store::Store,
+) -> Option<PathBuf> {
+    let name = media.stored_name.as_ref()?;
+    let lower = media.name.to_lowercase();
+    if ![".png", ".jpg", ".jpeg"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
+        return None;
+    }
+    store.asset_path(&client.cache_key(), &state.id, name).ok()
 }

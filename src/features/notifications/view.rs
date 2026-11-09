@@ -38,7 +38,7 @@ pub fn notification<'a>(
         identity = identity.push(widget::text::heading(event_label(&group.kind)));
     }
     let mut avatars = widget::row![].spacing(4).align_y(Alignment::Center);
-    for actor in group.actors.iter().take(1) {
+    if let Some(actor) = group.actors.first() {
         avatars = avatars.push(
             widget::button::image(
                 cache
@@ -52,21 +52,10 @@ pub fn notification<'a>(
             .on_press(Message::Status(status::Message::OpenAccount(actor.clone()))),
         );
     }
+    let local = group.created_at.with_timezone(&chrono::Local);
     let timestamp = widget::tooltip(
-        widget::text::caption(
-            group
-                .created_at
-                .with_timezone(&chrono::Local)
-                .format("%H:%M")
-                .to_string(),
-        ),
-        widget::text(
-            group
-                .created_at
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M %Z")
-                .to_string(),
-        ),
+        widget::text::caption(local.format("%H:%M").to_string()),
+        widget::text(local.format("%Y-%m-%d %H:%M %Z").to_string()),
         widget::tooltip::Position::Top,
     );
     let mut body = widget::column![widget::row![
