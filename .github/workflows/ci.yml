@@ -1,0 +1,38 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install build and validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libsecret-1-dev \
+            libxkbcommon-dev libwayland-dev libudev-dev libinput-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev desktop-file-utils appstream
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: python3 scripts/check_resources.py
+      - run: desktop-file-validate res/app.desktop
+      - run: appstreamcli validate --no-net res/dev.edfloreshz.Toot.metainfo.xml
+      - run: cargo check --locked --all-targets
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - name: Check staged installation
+        run: |
+          cargo install just --locked
+          just profile=debug rootdir="$RUNNER_TEMP/toot-stage" prefix=/usr install
+          test -x "$RUNNER_TEMP/toot-stage/usr/bin/cosmic-ext-toot"
+          test -f "$RUNNER_TEMP/toot-stage/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Toot.svg"
+          test -f "$RUNNER_TEMP/toot-stage/usr/share/metainfo/dev.edfloreshz.Toot.metainfo.xml"

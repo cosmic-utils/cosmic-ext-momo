@@ -86,6 +86,14 @@ pub fn status<'a>(
     cache: &'a Cache,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
+    if cache.deleted.contains(&status.id)
+        || status
+            .reblog
+            .as_ref()
+            .is_some_and(|post| cache.deleted.contains(&post.id))
+    {
+        return widget::column![].into();
+    }
     let status = cache.statuses.get(&status.id).unwrap_or(status);
     let reblog_button = reblog_button(cache, status);
     let status = status
@@ -511,6 +519,14 @@ fn media<'a>(
                     .unwrap_or(crate::cache::fallback_handle()),
             )
             .on_press(on_press.clone());
+            #[cfg(target_os = "linux")]
+            let button = button.name(
+                media
+                    .description
+                    .clone()
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| fl!("media-open-attachment")),
+            );
             let button = if compact {
                 button.width(80.0).height(80.0)
             } else {
@@ -639,17 +655,24 @@ fn header<'a>(
         widget::text(exact),
         widget::tooltip::Position::Top,
     );
+    let avatar = widget::button::image(
+        cache
+            .handles
+            .get(&status.account.avatar)
+            .cloned()
+            .unwrap_or_else(crate::cache::fallback_handle),
+    )
+    .width(avatar_size)
+    .height(avatar_size)
+    .on_press(Message::OpenAccount(status.account.clone()));
+    #[cfg(target_os = "linux")]
+    let avatar = avatar.name(format!(
+        "{}: {}",
+        fl!("media-view-profile"),
+        status.account.acct
+    ));
     widget::row![
-        widget::button::image(
-            cache
-                .handles
-                .get(&status.account.avatar)
-                .cloned()
-                .unwrap_or_else(crate::cache::fallback_handle)
-        )
-        .width(avatar_size)
-        .height(avatar_size)
-        .on_press(Message::OpenAccount(status.account.clone())),
+        avatar,
         identity,
         widget::column![time]
             .push_maybe(match status.visibility {

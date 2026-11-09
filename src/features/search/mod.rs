@@ -37,6 +37,10 @@ pub struct Search {
     query: String,
     results: Option<Results>,
     searching: bool,
+    request: u64,
+    error: Option<String>,
+    trending_error: Option<String>,
+    trending_request: u64,
     result_tabs: segmented_button::SingleSelectModel,
     trending: Vec<Tag>,
     trending_loaded: bool,
@@ -53,8 +57,10 @@ pub enum Message {
     Submit,
     /// Clear the query and any results, returning to the idle/trending view.
     Clear,
-    SetResults(Results),
-    SearchFailed(String),
+    SetResults(u64, Results),
+    SearchFailed(u64, String),
+    TrendingFailed(String),
+    RetryTrending,
     SelectResultKind(segmented_button::Entity),
     OpenAccount(Account),
     ToggleFollowAccount(String, bool),
@@ -73,16 +79,16 @@ impl Search {
         let mut result_tabs = segmented_button::SingleSelectModel::default();
         result_tabs
             .insert()
-            .text("Users")
+            .text(crate::fl!("search-users"))
             .data(ResultKind::Accounts)
             .activate();
         result_tabs
             .insert()
-            .text("Hashtags")
+            .text(crate::fl!("hashtags"))
             .data(ResultKind::Hashtags);
         result_tabs
             .insert()
-            .text("Posts")
+            .text(crate::fl!("profile-posts"))
             .data(ResultKind::Statuses);
 
         Self {
@@ -90,6 +96,10 @@ impl Search {
             query: String::new(),
             results: None,
             searching: false,
+            request: 0,
+            error: None,
+            trending_error: None,
+            trending_request: 0,
             result_tabs,
             trending: Vec::new(),
             trending_loaded: false,
@@ -112,7 +122,7 @@ impl Search {
         // feed (with a way back), rather than piling it below the results.
         if let Some(timeline) = &self.tag_timeline {
             return widget::column![
-                widget::button::standard("← Back to search").on_press(Message::DeselectTag),
+                widget::button::standard(crate::fl!("search-back")).on_press(Message::DeselectTag),
                 timeline.view(cache).map(Message::Timeline),
             ]
             .spacing(spacing.space_xs)
@@ -127,19 +137,39 @@ impl Search {
         }
 
         let has_query_or_results = !self.query.is_empty() || self.results.is_some();
-        let input =
-            widget::row![
-                widget::text_input("Search accounts, hashtags, statuses", &self.query)
-                    .on_input(Message::QueryChanged)
-                    .on_submit(|_| Message::Submit),
-            ]
-            .push_maybe(has_query_or_results.then(|| -> Element<'_, Message> {
-                widget::button::standard("Clear")
-                    .on_press(Message::Clear)
-                    .into()
-            }))
-            .spacing(spacing.space_xs);
+        let input = widget::row![
+            widget::text_input(crate::fl!("search-placeholder"), &self.query)
+                .on_input(Message::QueryChanged)
+                .on_submit(|_| Message::Submit),
+        ]
+        .push_maybe(has_query_or_results.then(|| -> Element<'_, Message> {
+            widget::button::standard(crate::fl!("search-clear"))
+                .on_press(Message::Clear)
+                .into()
+        }))
+        .spacing(spacing.space_xs);
 
+        let error: Option<Element<'_, Message>> = self.error.as_ref().map(|error| {
+            widget::column![
+                widget::text(error),
+                widget::button::standard(crate::fl!("reading-retry")).on_press(Message::Submit)
+            ]
+            .spacing(8)
+            .into()
+        });
+        let trending_error: Option<Element<'_, Message>> = self
+            .trending_error
+            .as_ref()
+            .filter(|_| !has_query_or_results)
+            .map(|error| {
+                widget::column![
+                    widget::text(error),
+                    widget::button::standard(crate::fl!("reading-retry"))
+                        .on_press(Message::RetryTrending)
+                ]
+                .spacing(8)
+                .into()
+            });
         let searching: Option<Element<_>> = self.searching.then(|| {
             widget::container(widget::indeterminate_circular().size(24.0))
                 .center_x(Length::Fill)
@@ -151,7 +181,7 @@ impl Search {
             self.trending
                 .iter()
                 .fold(
-                    widget::settings::section().title("Trending hashtags"),
+                    widget::settings::section().title(crate::fl!("search-trending")),
                     |section, tag| section.add(tag_row(tag, self.is_following_tag(tag))),
                 )
                 .into()
@@ -218,7 +248,15 @@ impl Search {
         widget::column![
             input,
             widget::scrollable(
-                widget::column![searching, idle, tabs, results_content].spacing(spacing.space_s),
+                widget::column![
+                    error,
+                    trending_error,
+                    searching,
+                    idle,
+                    tabs,
+                    results_content
+                ]
+                .spacing(spacing.space_s),
             )
             .width(Length::Fill)
             .height(Length::Fill),
@@ -240,33 +278,44 @@ impl Search {
                     return timeline.update(timeline::Message::SetClient(mastodon));
                 }
             }
-            Message::QueryChanged(query) => self.query = query,
+            Message::QueryChanged(query) => {
+                self.request += 1;
+                self.searching = false;
+                self.error = None;
+                self.query = query;
+            }
             Message::Submit => {
                 let query = self.query.trim().to_string();
                 if !query.is_empty() {
                     self.searching = true;
+                    self.error = None;
+                    self.request += 1;
+                    let request = self.request;
                     let mastodon = self.mastodon.clone();
                     return cosmic::task::future(async move {
-                        match mastodon
-                            .search(query, Some(&SearchInputOptions::default()))
-                            .await
+                        match crate::client::within_timeout(
+                            mastodon.search(query, Some(&SearchInputOptions::default())),
+                            crate::fl!("search-error"),
+                        )
+                        .await
                         {
                             Ok(response) => {
-                                app::Message::Search(Message::SetResults(response.json))
+                                app::Message::Search(Message::SetResults(request, response.json))
                             }
-                            Err(err) => {
-                                app::Message::Search(Message::SearchFailed(err.to_string()))
-                            }
+                            Err(err) => app::Message::Search(Message::SearchFailed(request, err)),
                         }
                     });
                 }
             }
             Message::Clear => {
+                self.request += 1;
+                self.searching = false;
+                self.error = None;
                 self.query.clear();
                 self.results = None;
                 self.tag_timeline = None;
             }
-            Message::SetResults(results) => {
+            Message::SetResults(request, results) if request == self.request => {
                 self.searching = false;
                 let account_ids: Vec<String> = results
                     .accounts
@@ -298,17 +347,28 @@ impl Search {
                     tasks.push(cosmic::task::future(async move {
                         match mastodon.get_relationships(account_ids).await {
                             Ok(response) => app::Message::CacheRelationships(response.json),
-                            Err(err) => {
-                                app::Message::Error(format!("Couldn't load relationships: {err}"))
-                            }
+                            Err(err) => app::Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }));
                 }
                 return Task::batch(tasks);
             }
-            Message::SearchFailed(err) => {
+            Message::SearchFailed(request, error) if request == self.request => {
                 self.searching = false;
-                return cosmic::task::message(app::Message::Error(format!("Search failed: {err}")));
+                self.error = Some(error);
+            }
+            Message::SetResults(..) | Message::SearchFailed(..) => (),
+            Message::TrendingFailed(error) => {
+                self.trending_error = Some(error);
+                self.trending_loaded = true;
+            }
+            Message::RetryTrending => {
+                self.trending_error = None;
+                self.trending_loaded = false;
+                self.trending_request += 1;
             }
             Message::SelectResultKind(entity) => self.result_tabs.activate(entity),
             Message::OpenAccount(account) => {
@@ -326,7 +386,10 @@ impl Search {
                     };
                     match result {
                         Ok(response) => app::Message::CacheRelationship(response.json),
-                        Err(err) => app::Message::Error(format!("Couldn't update follow: {err}")),
+                        Err(err) => app::Message::Error(crate::client::api_error(
+                            &err,
+                            crate::fl!("action-error"),
+                        )),
                     }
                 });
             }
@@ -350,9 +413,10 @@ impl Search {
                             name,
                             response.json.following.unwrap_or(!following),
                         )),
-                        Err(err) => {
-                            app::Message::Error(format!("Couldn't update hashtag follow: {err}"))
-                        }
+                        Err(err) => app::Message::Error(crate::client::api_error(
+                            &err,
+                            crate::fl!("action-error"),
+                        )),
                     }
                 });
             }
@@ -376,7 +440,7 @@ impl Search {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![];
         if !self.trending_loaded {
-            subscriptions.push(fetch_trending(self.mastodon.clone()));
+            subscriptions.push(fetch_trending(self.mastodon.clone(), self.trending_request));
         }
         if let Some(timeline) = &self.tag_timeline {
             subscriptions.push(timeline.subscription().map(Message::Timeline));
@@ -412,9 +476,13 @@ fn account_row<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         .interaction(cosmic::iced::mouse::Interaction::Pointer)
         .into(),
         widget::space::horizontal().into(),
-        widget::button::standard(if following { "Unfollow" } else { "Follow" })
-            .on_press(Message::ToggleFollowAccount(account.id.clone(), following))
-            .into(),
+        widget::button::standard(if following {
+            crate::fl!("action-unfollow")
+        } else {
+            crate::fl!("action-follow")
+        })
+        .on_press(Message::ToggleFollowAccount(account.id.clone(), following))
+        .into(),
     ])
     .into()
 }
@@ -426,31 +494,64 @@ fn tag_row(tag: &Tag, following: bool) -> Element<'_, Message> {
             .on_press(Message::SelectTag(tag.name.clone()))
             .into(),
         widget::space::horizontal().into(),
-        widget::button::standard(if following { "Unfollow" } else { "Follow" })
-            .on_press(Message::ToggleFollowTag(tag.name.clone(), following))
-            .into(),
+        widget::button::standard(if following {
+            crate::fl!("action-unfollow")
+        } else {
+            crate::fl!("action-follow")
+        })
+        .on_press(Message::ToggleFollowTag(tag.name.clone(), following))
+        .into(),
     ])
     .spacing(spacing.space_xs)
     .into()
 }
 
-fn fetch_trending(mastodon: Client) -> Subscription<Message> {
-    Subscription::run_with(mastodon, |mastodon| {
+fn fetch_trending(mastodon: Client, request: u64) -> Subscription<Message> {
+    Subscription::run_with((mastodon, request), |(mastodon, _)| {
         let mastodon = mastodon.clone();
         cosmic::iced::stream::channel(
             1,
             move |mut output: futures_channel::mpsc::Sender<Message>| async move {
                 use futures_util::SinkExt;
-                match mastodon.get_instance_trends(Some(10)).await {
+                match crate::client::within_timeout(
+                    mastodon.get_instance_trends(Some(10)),
+                    crate::fl!("feed-load-error"),
+                )
+                .await
+                {
                     Ok(response) => {
                         if let Err(err) = output.send(Message::SetTrending(response.json)).await {
                             tracing::warn!("failed to send trending tags: {}", err);
                         }
                     }
-                    Err(err) => tracing::warn!("failed to get trending tags: {}", err),
+                    Err(error) => {
+                        let _ = output.send(Message::TrendingFailed(error)).await;
+                    }
                 }
                 std::future::pending().await
             },
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn clearing_or_changing_search_rejects_stale_results_and_failures() {
+        let mut search = Search::new(Client::new("https://example.org".into(), None));
+        let _ = search.update(Message::QueryChanged("first".into()));
+        let old = search.request;
+        let _ = search.update(Message::Clear);
+        let empty =
+            serde_json::from_value(serde_json::json!({"accounts":[],"hashtags":[],"statuses":[]}))
+                .unwrap();
+        let _ = search.update(Message::SetResults(old, empty));
+        let _ = search.update(Message::SearchFailed(old, "old failure".into()));
+        assert!(search.results.is_none() && search.error.is_none() && !search.searching);
+        let _ = search.update(Message::SearchFailed(search.request, "offline".into()));
+        assert_eq!(search.error.as_deref(), Some("offline"));
+        let _ = search.update(Message::QueryChanged("second".into()));
+        assert!(search.error.is_none());
+    }
 }

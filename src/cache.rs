@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cosmic::{
     iced::core::image,
@@ -11,6 +11,7 @@ use crate::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct Cache {
+    pub deleted: HashSet<String>,
     pub reading: crate::features::reading::State,
     pub handles: HashMap<String, Handle>,
     pub statuses: HashMap<String, Status>,
@@ -36,6 +37,7 @@ pub struct Cache {
 impl Cache {
     pub fn new() -> Self {
         Self {
+            deleted: HashSet::new(),
             reading: crate::features::reading::State::new(false),
             handles: HashMap::new(),
             statuses: HashMap::new(),
@@ -67,15 +69,95 @@ impl Cache {
             .is_some_and(|account| account.id == account_id)
     }
 
-    pub fn insert_status(&mut self, status: Status) {
-        self.statuses.insert(status.id.to_string(), status.clone());
-        if let Some(reblog) = status.reblog {
-            self.statuses.insert(reblog.id.to_string(), *reblog);
+    pub fn insert_status(&mut self, mut status: Status) {
+        if self.deleted.contains(&status.id)
+            || status
+                .reblog
+                .as_ref()
+                .is_some_and(|post| self.deleted.contains(&post.id))
+        {
+            return;
         }
+        if self
+            .statuses
+            .get(&status.id)
+            .is_some_and(|old| old.edited_at > status.edited_at)
+        {
+            return;
+        }
+        if let Some(reblog) = &mut status.reblog {
+            self.insert_status((**reblog).clone());
+            if let Some(current) = self.statuses.get(&reblog.id) {
+                **reblog = current.clone();
+            }
+        }
+        // Keep embedded copies current too, including the copies saved in snapshots.
+        for cached in self.statuses.values_mut() {
+            if let Some(reblog) = &mut cached.reblog {
+                if reblog.id == status.id {
+                    **reblog = status.clone();
+                }
+            }
+        }
+        for notification in self.notifications.values_mut() {
+            if let Some(post) = &mut notification.status {
+                if post.id == status.id {
+                    *post = status.clone();
+                } else if let Some(reblog) = &mut post.reblog {
+                    if reblog.id == status.id {
+                        **reblog = status.clone();
+                    }
+                }
+            }
+        }
+        self.statuses.insert(status.id.clone(), status);
         self.dirty = true;
     }
 
+    /// Tombstones prevent late REST responses from resurrecting streamed deletions.
+    /// Return wrapper IDs as well so every feed can drop boosts of the deleted post.
+    pub fn delete_status(&mut self, id: &str) -> Vec<String> {
+        let mut ids = vec![id.to_owned()];
+        ids.extend(
+            self.statuses
+                .values()
+                .filter(|post| post.reblog.as_ref().is_some_and(|post| post.id == id))
+                .map(|post| post.id.clone()),
+        );
+        self.deleted.extend(ids.iter().cloned());
+        self.statuses.retain(|id, _| !self.deleted.contains(id));
+        self.notifications.retain(|_, notification| {
+            !notification.status.as_ref().is_some_and(|post| {
+                self.deleted.contains(&post.id)
+                    || post
+                        .reblog
+                        .as_ref()
+                        .is_some_and(|post| self.deleted.contains(&post.id))
+            })
+        });
+        self.dirty = true;
+        ids
+    }
+
     pub fn insert_notification(&mut self, notification: Notification) {
+        if notification.status.as_ref().is_some_and(|post| {
+            self.deleted.contains(&post.id)
+                || post
+                    .reblog
+                    .as_ref()
+                    .is_some_and(|post| self.deleted.contains(&post.id))
+        }) {
+            return;
+        }
+        let mut notification = notification;
+        if let Some(status) = &notification.status {
+            self.insert_status(status.clone());
+        }
+        if let Some(status) = &mut notification.status {
+            if let Some(current) = self.statuses.get(&status.id) {
+                *status = current.clone();
+            }
+        }
         let status = notification.status.clone();
         self.notifications
             .insert(notification.id.to_string(), notification);
@@ -90,6 +172,7 @@ impl Cache {
     }
 
     pub fn clear(&mut self) {
+        self.deleted.clear();
         self.reading = crate::features::reading::State::new(false);
         self.statuses.clear();
         self.notifications.clear();
@@ -110,18 +193,23 @@ pub fn fallback_handle() -> widget::image::Handle {
     image::Handle::from_bytes(include_bytes!("../assets/missing.png").to_vec())
 }
 
-pub async fn get(url: impl ToString) -> Result<Handle, Error> {
+pub async fn get(url: impl ToString, epoch: u64) -> Result<Handle, Error> {
     let url = url.to_string();
 
     if let Some(bytes) = load_cached_image(url.clone()).await {
         return Ok(Handle::from_bytes(bytes));
     }
 
-    let response = reqwest::get(&url).await?;
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()
+        .await?;
     match response.error_for_status() {
         Ok(response) => {
             let bytes = response.bytes().await?.to_vec();
-            save_cached_image(url, bytes.clone());
+            save_cached_image(url, bytes.clone(), epoch);
             Ok(Handle::from_bytes(bytes))
         }
         Err(err) => Err(err.into()),
@@ -138,8 +226,8 @@ async fn load_cached_image(url: String) -> Option<Vec<u8>> {
         .flatten()
 }
 
-fn save_cached_image(url: String, bytes: Vec<u8>) {
-    tokio::task::spawn_blocking(move || crate::persistence::save_image(&url, &bytes));
+fn save_cached_image(url: String, bytes: Vec<u8>, epoch: u64) {
+    tokio::task::spawn_blocking(move || crate::persistence::save_image(&url, &bytes, epoch));
 }
 
 pub fn extract_status_images(status: &Status) -> Vec<String> {

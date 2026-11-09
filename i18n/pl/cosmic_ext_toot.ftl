@@ -30,7 +30,6 @@ confirm-authorization-description = Kopiuj kod uwierzytelnienia z przeglądarki 
 authorization-code = Kod uwierzytelnienia
 
 ## Context
-about = O zatrąbieniu
 profile = Profil
 status = Status
 

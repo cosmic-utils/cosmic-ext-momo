@@ -30,7 +30,6 @@ confirm-authorization-description = Kopieer de autorisatiecode uit uw browser en
 authorization-code = Autorisatiecode
 
 ## Context
-about = Over
 profile = Profiel
 status = Status
 

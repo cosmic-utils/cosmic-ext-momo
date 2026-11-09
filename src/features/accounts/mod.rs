@@ -62,17 +62,17 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         })
         .collect();
     let followers = widget::column![
-        widget::text::text("Followers"),
+        widget::text::text(crate::fl!("profile-followers")),
         widget::text::title3(account.followers_count.to_string()),
     ];
     let following = widget::column![
-        widget::text::text("Following"),
+        widget::text::text(crate::fl!("profile-following")),
         widget::text::title3(account.following_count.to_string()),
     ]
     .width(Length::FillPortion(1))
     .align_x(Horizontal::Center);
     let statuses = widget::column![
-        widget::text::text("Posts"),
+        widget::text::text(crate::fl!("profile-posts")),
         widget::text::title3(account.statuses_count.to_string()),
     ]
     .width(Length::FillPortion(1))
@@ -127,18 +127,30 @@ fn relationship_actions<'a>(
     let blocking = relationship.is_some_and(|r| r.blocking);
 
     widget::row![
-        widget::button::text(if following { "Unfollow" } else { "Follow" })
-            .class(if following {
-                cosmic::theme::Button::Standard
-            } else {
-                cosmic::theme::Button::Suggested
-            })
-            .on_press(Message::Follow(account.id.clone(), following)),
-        widget::button::text(if muting { "Unmute" } else { "Mute" })
-            .on_press(Message::Mute(account.id.clone(), muting)),
-        widget::button::text(if blocking { "Unblock" } else { "Block" })
-            .class(cosmic::theme::Button::Destructive)
-            .on_press(Message::Block(account.id.clone(), blocking)),
+        widget::button::text(if following {
+            crate::fl!("action-unfollow")
+        } else {
+            crate::fl!("action-follow")
+        })
+        .class(if following {
+            cosmic::theme::Button::Standard
+        } else {
+            cosmic::theme::Button::Suggested
+        })
+        .on_press(Message::Follow(account.id.clone(), following)),
+        widget::button::text(if muting {
+            crate::fl!("action-unmute")
+        } else {
+            crate::fl!("action-mute")
+        })
+        .on_press(Message::Mute(account.id.clone(), muting)),
+        widget::button::text(if blocking {
+            crate::fl!("action-unblock")
+        } else {
+            crate::fl!("action-block")
+        })
+        .class(cosmic::theme::Button::Destructive)
+        .on_press(Message::Block(account.id.clone(), blocking)),
     ]
     .spacing(spacing.space_xs)
     .into()

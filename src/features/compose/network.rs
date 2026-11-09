@@ -112,6 +112,9 @@ pub async fn submit(client: Client, state: State) -> Result<Published, SubmitErr
         .execute(request)
         .await
         .map_err(|_| SubmitError::Uncertain)?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(SubmitError::Rejected(fl!("session-expired")));
+    }
     if !response.status().is_success() {
         if response.status().is_client_error() && !matches!(response.status().as_u16(), 408 | 409) {
             let details = response

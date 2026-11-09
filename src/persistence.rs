@@ -142,10 +142,21 @@ pub fn load_image(url: &str) -> Option<Vec<u8>> {
     std::fs::read(image_cache_path(url)?).ok()
 }
 
-pub fn save_image(url: &str, bytes: &[u8]) {
-    let Some(path) = image_cache_path(url) else {
+pub fn save_image(url: &str, bytes: &[u8], epoch: u64) {
+    if let Some(path) = image_cache_path(url) {
+        save_image_at(path, bytes, epoch);
+    }
+}
+
+fn save_image_at(path: PathBuf, bytes: &[u8], epoch: u64) {
+    let _guard = IMAGE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    if epoch != image_epoch() {
         return;
-    };
+    }
+    write_image(path, bytes);
+}
+
+fn write_image(path: PathBuf, bytes: &[u8]) {
     let Some(parent) = path.parent() else { return };
     if let Err(err) = std::fs::create_dir_all(parent) {
         tracing::warn!("failed to create image cache directory: {err}");
@@ -160,5 +171,73 @@ pub fn save_image(url: &str, bytes: &[u8]) {
 pub fn clear_account(base_url: &str) {
     if let Some(dir) = account_dir(base_url) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+// Serialize image writes and cleanup. Downloads started before cleanup must not
+// repopulate files after the user has cleared them.
+static IMAGE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static IMAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn image_epoch() -> u64 {
+    IMAGE_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn clear_cached_content(account: &str) -> std::io::Result<()> {
+    let _guard = IMAGE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    IMAGE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if let Some(root) = cache_root() {
+        clear_at(&root, account)?;
+    }
+    Ok(())
+}
+
+fn clear_at(root: &std::path::Path, account: &str) -> std::io::Result<()> {
+    remove_cache_dir(root.join(account_slug(account)))?;
+    remove_cache_dir(root.join("images"))
+}
+
+fn remove_cache_dir(path: PathBuf) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_image_download_from_before_cleanup_cannot_write_back_to_disk() {
+        let root = std::env::temp_dir().join(format!("toot-image-test-{}", uuid::Uuid::new_v4()));
+        let path = root.join("image");
+        save_image_at(path.clone(), b"old", image_epoch().wrapping_sub(1));
+        assert!(!path.exists());
+        save_image_at(path.clone(), b"current", image_epoch());
+        assert_eq!(std::fs::read(&path).unwrap(), b"current");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn cache_cleanup_is_account_scoped_and_preserves_drafts_and_other_accounts() {
+        let root = std::env::temp_dir().join(format!("toot-cache-test-{}", uuid::Uuid::new_v4()));
+        let cache = root.join("cache");
+        let alice = "https://example.org#alice";
+        let bob = "https://example.org#bob";
+        for dir in [
+            cache.join(account_slug(alice)),
+            cache.join(account_slug(bob)),
+            cache.join("images"),
+            root.join("drafts"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("saved"), b"keep").unwrap();
+        }
+        clear_at(&cache, alice).unwrap();
+        assert!(!cache.join(account_slug(alice)).exists());
+        assert!(!cache.join("images").exists());
+        assert!(cache.join(account_slug(bob)).join("saved").exists());
+        assert!(root.join("drafts/saved").exists());
+        clear_at(&cache, alice).unwrap(); // repeated cleanup is harmless
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
