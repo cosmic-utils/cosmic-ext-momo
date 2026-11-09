@@ -4,7 +4,6 @@ use crate::cache::Cache;
 use crate::client::{Client, Session, Sessions};
 use crate::config::TootConfig;
 use crate::features::compose;
-use crate::features::status::StatusOptions;
 use crate::features::timeline::{Timeline, TimelineKind};
 use crate::features::{
     accounts, hashtags, lists, notifications, onboarding, reading, search, settings, status,
@@ -22,7 +21,6 @@ use cosmic::widget::toaster::{Toast, ToastId, Toasts};
 use cosmic::widget::{self, menu, nav_bar};
 use cosmic::{Application, ApplicationExt, Apply, Element};
 use megalodon::entities::{Account, Notification, Status};
-use megalodon::megalodon::PostStatusInputOptions;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -149,7 +147,11 @@ pub struct AppModel {
     /// The instance's reported maximum status length, used for the compose
     /// dialog's character counter. Defaults to Mastodon's standard limit
     /// until the real value is fetched after login.
-    max_characters: u32,
+    compose_limits: compose::Limits,
+    compose_store: compose::store::Store,
+    drafts: Vec<compose::State>,
+    drafts_readable: bool,
+    compose_request: u64,
     home: Timeline,
     notifications: notifications::Notifications,
     explore: Timeline,
@@ -215,7 +217,8 @@ pub enum Message {
     /// compared against "me".
     SetAccount(Account),
     /// The instance's max status length, fetched right after login.
-    SetMaxCharacters(u32),
+    SetComposeLimits(compose::Limits),
+    Compose(compose::Message),
     /// A status was deleted on the server; remove it from the cache.
     StatusDeleted(String),
     /// A recoverable error to surface to the user as a toast instead of
@@ -237,6 +240,8 @@ pub enum DialogAction {
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
+    Drafts,
+    CloseDraft,
     Report(reading::report::State),
     Compose(compose::State),
     SwitchInstance(String),
@@ -371,7 +376,11 @@ impl Application for AppModel {
             image_queue: VecDeque::new(),
             image_inflight: HashSet::new(),
             toasts: Toasts::new(Message::CloseToast),
-            max_characters: 500,
+            compose_limits: compose::Limits::default(),
+            compose_store: compose::store::Store::default(),
+            drafts: vec![],
+            drafts_readable: true,
+            compose_request: 0,
             home: Timeline::new(mastodon.clone(), TimelineKind::Home),
             notifications: notifications::Notifications::new(mastodon.clone()),
             explore: Timeline::new(mastodon.clone(), TimelineKind::Public),
@@ -384,6 +393,7 @@ impl Application for AppModel {
             search: search::Search::new(mastodon.clone()),
         };
 
+        app.load_drafts();
         app.nav.activate_position(0);
 
         let mut tasks = vec![
@@ -453,10 +463,18 @@ impl Application for AppModel {
             vec![
                 widget::icon::from_name("list-add-symbolic")
                     .apply(widget::button::icon)
-                    .on_press(Message::Dialog(DialogAction::Open(Dialog::Compose(
-                        compose::State::default(),
-                    ))))
+                    .on_press(Message::Compose(compose::Message::New))
                     .into(),
+                widget::button::standard(format!(
+                    "{} ({})",
+                    fl!("compose-drafts"),
+                    self.drafts
+                        .iter()
+                        .filter(|draft| draft.published_id.is_none())
+                        .count()
+                ))
+                .on_press(Message::Compose(compose::Message::Drafts))
+                .into(),
                 widget::icon::from_name("system-log-out-symbolic")
                     .apply(widget::button::icon)
                     .on_press(Message::Dialog(DialogAction::Open(Dialog::Logout)))
@@ -578,22 +596,85 @@ impl Application for AppModel {
 
         let dialog = match dialog_page {
             Dialog::Compose(state) => {
-                let reply_preview = state.in_reply_to_id.as_ref().and_then(|id| {
-                    self.cache.statuses.get(id).map(|reply_target| {
-                        status::status(reply_target, StatusOptions::none(), &self.cache)
-                            .map(Message::Status)
-                            .apply(widget::container)
-                            .class(cosmic::style::Container::Card)
-                            .into()
-                    })
-                });
+                let preview = state
+                    .in_reply_to_id
+                    .as_ref()
+                    .and_then(|id| self.cache.statuses.get(id))
+                    .map(|post| {
+                        status::status(
+                            post,
+                            status::StatusOptions::none()
+                                .context(reading::filters::Context::Thread),
+                            &self.cache,
+                        )
+                        .map(Message::Status)
+                    });
                 compose::view(
                     state,
-                    reply_preview,
                     &self.dialog_editor,
-                    self.max_characters,
+                    preview,
+                    &self.compose_limits,
+                    self.sessions
+                        .active_session()
+                        .map(|session| session.label())
+                        .unwrap_or_default(),
+                    &self.mastodon,
+                    &self.compose_store,
                 )
             }
+            Dialog::Drafts => {
+                let mut content = widget::column![].spacing(12);
+                if !self.drafts_readable {
+                    content = content.push(widget::text(fl!("compose-storage-error")));
+                }
+                for draft in self
+                    .drafts
+                    .iter()
+                    .filter(|draft| draft.published_id.is_none())
+                {
+                    let label = draft
+                        .text
+                        .as_deref()
+                        .unwrap_or("")
+                        .replace('\n', " ")
+                        .chars()
+                        .take(60)
+                        .collect::<String>();
+                    content = content.push(
+                        widget::button::standard(if label.trim().is_empty() {
+                            fl!("compose-untitled")
+                        } else {
+                            label
+                        })
+                        .on_press(Message::Compose(compose::Message::Resume(draft.id.clone()))),
+                    );
+                }
+                if self.drafts.is_empty() {
+                    content = content.push(widget::text(fl!("compose-no-drafts")));
+                }
+                widget::dialog()
+                    .title(fl!("compose-drafts"))
+                    .control(widget::container(widget::scrollable(content)).height(300.))
+                    .primary_action(
+                        widget::button::standard(fl!("compose-close"))
+                            .on_press(Message::Dialog(DialogAction::Close)),
+                    )
+            }
+            Dialog::CloseDraft => widget::dialog()
+                .title(fl!("compose-close-question"))
+                .body(fl!("compose-close-description"))
+                .primary_action(
+                    widget::button::suggested(fl!("compose-keep"))
+                        .on_press(Message::Compose(compose::Message::Keep)),
+                )
+                .secondary_action(
+                    widget::button::standard(fl!("compose-continue"))
+                        .on_press(Message::Compose(compose::Message::ContinueEditing)),
+                )
+                .tertiary_action(
+                    widget::button::destructive(fl!("compose-discard"))
+                        .on_press(Message::Compose(compose::Message::Discard)),
+                ),
             Dialog::SwitchInstance(instance) => self.switch_instance(instance.clone()),
             Dialog::Logout => self.logout(),
             Dialog::DeleteStatus(id) => self.delete_status(id.clone()),
@@ -606,6 +687,9 @@ impl Application for AppModel {
     fn on_escape(&mut self) -> Task<Self::Message> {
         if self.onboarding.is_some() {
             return Task::none();
+        }
+        if matches!(self.dialog_pages.front(), Some(Dialog::Compose(_))) {
+            return self.update(Message::Compose(compose::Message::Close));
         }
         if matches!(self.dialog_pages.front(), Some(Dialog::Report(state)) if state.sending) {
             return Task::none();
@@ -625,6 +709,9 @@ impl Application for AppModel {
     /// saved by the periodic 30s tick, so a quick open-then-quit would never
     /// persist anything.
     fn on_app_exit(&mut self) -> Option<Self::Message> {
+        if !self.persist_active_draft() {
+            return Some(Message::None);
+        }
         self.flush_cache_to_disk();
         if let Some(session) = self.sessions.sessions.get_mut(self.sessions.active) {
             session.preferences = Some(self.config.clone());
@@ -726,6 +813,15 @@ impl Application for AppModel {
                 .map(|_| Message::FlushCache),
         );
 
+        if self
+            .active_compose()
+            .is_some_and(|state| state.media.iter().any(|media| media.uploading))
+        {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_millis(200))
+                    .map(|_| Message::Compose(compose::Message::Tick)),
+            );
+        }
         let generation = self.generation;
         Subscription::batch(subscriptions)
             .with(generation)
@@ -1287,9 +1383,10 @@ impl Application for AppModel {
                 }
                 self.cache.me = Some(account);
             }
-            Message::SetMaxCharacters(max_characters) => {
-                self.max_characters = max_characters;
+            Message::SetComposeLimits(limits) => {
+                self.compose_limits = limits;
             }
+            Message::Compose(message) => tasks.push(self.update_compose(message)),
             Message::StatusDeleted(id) => {
                 self.cache.statuses.remove(&id);
             }
@@ -1345,18 +1442,16 @@ impl Application for AppModel {
             }
             Message::Dialog(action) => match action {
                 DialogAction::Open(dialog) => match dialog {
-                    Dialog::Compose(state) => {
-                        self.dialog_editor = widget::text_editor::Content::with_text(
-                            state.text.as_deref().unwrap_or(""),
-                        );
-                        self.dialog_pages.push_back(Dialog::Compose(state))
-                    }
+                    Dialog::Compose(state) => return self.open_compose(state),
                     _ => self.dialog_pages.push_back(dialog),
                 },
                 DialogAction::Update(dialog_page) => {
                     self.dialog_pages[0] = dialog_page;
                 }
                 DialogAction::Close => {
+                    if matches!(self.dialog_pages.front(), Some(Dialog::Compose(_))) {
+                        return self.update(Message::Compose(compose::Message::Close));
+                    }
                     if !matches!(self.dialog_pages.front(), Some(Dialog::Report(state)) if state.sending)
                     {
                         self.dialog_pages.pop_front();
@@ -1366,30 +1461,10 @@ impl Application for AppModel {
                     if let Some(dialog_page) = self.dialog_pages.pop_front() {
                         match dialog_page {
                             Dialog::Compose(state) => {
-                                let text = self.dialog_editor.text();
-                                let mastodon = self.mastodon.clone();
-                                tasks.push(cosmic::task::future(async move {
-                                    let options = PostStatusInputOptions {
-                                        in_reply_to_id: state.in_reply_to_id,
-                                        spoiler_text: state
-                                            .content_warning
-                                            .then_some(state.spoiler_text),
-                                        visibility: Some(state.visibility),
-                                        ..Default::default()
-                                    };
-                                    match mastodon.post_status(text, Some(&options)).await {
-                                        Ok(response) => match response.json {
-                                            megalodon::megalodon::PostStatusOutput::Status(
-                                                status,
-                                            ) => Message::CacheStatus(status),
-                                            megalodon::megalodon::PostStatusOutput::ScheduledStatus(
-                                                _,
-                                            ) => Message::None,
-                                        },
-                                        Err(err) => Message::Error(format!("Couldn't post: {err}")),
-                                    }
-                                }));
+                                self.dialog_pages.push_front(Dialog::Compose(state));
+                                tasks.push(self.update(Message::Compose(compose::Message::Submit)));
                             }
+                            Dialog::Drafts | Dialog::CloseDraft => {}
                             Dialog::DeleteStatus(id) => {
                                 let mastodon = self.mastodon.clone();
                                 tasks.push(cosmic::task::future(async move {
@@ -1418,7 +1493,18 @@ impl Application for AppModel {
                 }
             },
             Message::EditorAction(action) => {
-                self.dialog_editor.perform(action);
+                if self.active_compose().is_some_and(compose::State::editable) {
+                    let editing = action.is_edit();
+                    self.dialog_editor.perform(action);
+                    if editing {
+                        let text = self.dialog_editor.text();
+                        if let Some(state) = self.active_compose_mut() {
+                            state.text = Some(text);
+                            state.changed();
+                        }
+                        self.persist_active_draft();
+                    }
+                }
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
@@ -1442,6 +1528,546 @@ impl Application for AppModel {
 }
 
 impl AppModel {
+    fn active_compose(&self) -> Option<&compose::State> {
+        self.dialog_pages.iter().find_map(|dialog| {
+            if let Dialog::Compose(state) = dialog {
+                Some(state)
+            } else {
+                None
+            }
+        })
+    }
+    fn active_compose_mut(&mut self) -> Option<&mut compose::State> {
+        self.dialog_pages.iter_mut().find_map(|dialog| {
+            if let Dialog::Compose(state) = dialog {
+                Some(state)
+            } else {
+                None
+            }
+        })
+    }
+    fn load_drafts(&mut self) {
+        if self.mastodon.account_id.is_empty() {
+            self.drafts.clear();
+            self.drafts_readable = true;
+            return;
+        }
+        match self.compose_store.load(&self.mastodon.cache_key()) {
+            Ok(drafts) => {
+                self.drafts = drafts;
+                self.drafts_readable = true;
+            }
+            Err(_) => {
+                self.drafts.clear();
+                self.drafts_readable = false;
+            }
+        }
+    }
+    fn persist_active_draft(&mut self) -> bool {
+        let Some(state) = self.active_compose().cloned() else {
+            return true;
+        };
+        let key = self.mastodon.cache_key();
+        if !self.drafts_readable {
+            match self.compose_store.load(&key) {
+                Ok(mut saved) => {
+                    for draft in self.drafts.drain(..) {
+                        saved.retain(|old| old.id != draft.id);
+                        saved.push(draft);
+                    }
+                    self.drafts = saved;
+                    self.drafts_readable = true;
+                }
+                Err(error) => {
+                    if let Some(state) = self.active_compose_mut() {
+                        state.storage_error = Some(error);
+                    }
+                    return false;
+                }
+            }
+        }
+        if let Some(index) = self.drafts.iter().position(|draft| draft.id == state.id) {
+            self.drafts[index] = state;
+        } else {
+            self.drafts.push(state);
+        }
+        let result = self.compose_store.save(&key, &self.drafts);
+        if let Some(state) = self.active_compose_mut() {
+            state.storage_error = result.as_ref().err().cloned();
+        }
+        result.is_ok()
+    }
+    fn open_compose(&mut self, state: compose::State) -> Task<Message> {
+        if self.active_compose().is_some() {
+            return cosmic::task::message(Message::Error(fl!("compose-existing")));
+        }
+        if self.cache.me.is_none() || self.mastodon.account_id.is_empty() {
+            return cosmic::task::message(Message::Error(fl!("compose-account-loading")));
+        }
+        self.compose_request += 1;
+        self.dialog_editor =
+            widget::text_editor::Content::with_text(state.text.as_deref().unwrap_or(""));
+        self.dialog_pages
+            .retain(|dialog| !matches!(dialog, Dialog::Drafts));
+        self.dialog_pages.push_front(Dialog::Compose(state));
+        self.persist_active_draft();
+        Task::none()
+    }
+    fn close_compose_frames(&mut self) {
+        self.compose_request += 1;
+        self.dialog_pages
+            .retain(|dialog| !matches!(dialog, Dialog::Compose(_) | Dialog::CloseDraft));
+        self.dialog_editor = widget::text_editor::Content::default();
+    }
+    fn drop_active_draft(&mut self) -> bool {
+        let Some(id) = self.active_compose().map(|state| state.id.clone()) else {
+            return true;
+        };
+        let candidate: Vec<_> = self
+            .drafts
+            .iter()
+            .filter(|draft| draft.id != id)
+            .cloned()
+            .collect();
+        match self
+            .compose_store
+            .save(&self.mastodon.cache_key(), &candidate)
+        {
+            Ok(()) => {
+                self.drafts = candidate;
+                self.compose_store
+                    .remove_assets(&self.mastodon.cache_key(), &id);
+                true
+            }
+            Err(error) => {
+                if let Some(state) = self.active_compose_mut() {
+                    state.storage_error = Some(error);
+                }
+                false
+            }
+        }
+    }
+    fn begin_status_submission(&mut self) -> Task<Message> {
+        let previous_attempt = self.active_compose().and_then(|state| state.attempted_at);
+        if let Some(state) = self.active_compose_mut() {
+            state
+                .attempted_at
+                .get_or_insert(chrono::Utc::now().timestamp());
+            state.error = None;
+        }
+        if !self.persist_active_draft() {
+            if let Some(state) = self.active_compose_mut() {
+                state.attempted_at = previous_attempt;
+            }
+            return Task::none();
+        }
+        let Some(state) = self.active_compose().cloned() else {
+            return Task::none();
+        };
+        if let Some(current) = self.active_compose_mut() {
+            current.sending = true;
+        }
+        let client = self.mastodon.clone();
+        let request = self.compose_request;
+        cosmic::task::future(async move {
+            Message::Compose(compose::Message::Submitted(
+                request,
+                compose::network::submit(client, state).await,
+            ))
+        })
+    }
+    fn update_compose(&mut self, message: compose::Message) -> Task<Message> {
+        use compose::Message as C;
+        match message {
+            C::New => return self.open_compose(compose::State::new(self.cache.me.as_ref())),
+            C::Reply(id) => {
+                if let Some(post) = self.cache.statuses.get(&id) {
+                    return self
+                        .open_compose(compose::State::reply_to(post, self.cache.me.as_ref()));
+                }
+                return cosmic::task::message(Message::Error(fl!("compose-reply-error")));
+            }
+            C::Edit(id) => {
+                if self.active_compose().is_some() {
+                    return cosmic::task::message(Message::Error(fl!("compose-existing")));
+                }
+                if !self.cache.is_me(
+                    self.cache
+                        .statuses
+                        .get(&id)
+                        .map(|post| post.account.id.as_str())
+                        .unwrap_or(""),
+                ) {
+                    return Task::none();
+                }
+                self.compose_request += 1;
+                let request = self.compose_request;
+                let client = self.mastodon.clone();
+                return cosmic::task::future(async move {
+                    Message::Compose(C::EditLoaded(
+                        request,
+                        compose::network::edit(client, id).await,
+                    ))
+                });
+            }
+            C::EditLoaded(request, result) => {
+                if request != self.compose_request || self.active_compose().is_some() {
+                    return Task::none();
+                }
+                return match result {
+                    Ok(state) => self.open_compose(state),
+                    Err(error) => cosmic::task::message(Message::Error(error)),
+                };
+            }
+            C::Drafts => {
+                if self.active_compose().is_some() {
+                    return cosmic::task::message(Message::Error(fl!("compose-existing")));
+                }
+                self.load_drafts();
+                self.dialog_pages.push_front(Dialog::Drafts);
+            }
+            C::Resume(id) => {
+                if let Some(state) = self.drafts.iter().find(|draft| draft.id == id).cloned() {
+                    return self.open_compose(state);
+                }
+            }
+            C::Close => {
+                let Some(state) = self.active_compose() else {
+                    return Task::none();
+                };
+                if state.busy() {
+                    return Task::none();
+                }
+                if state.published_id.is_some() {
+                    self.close_compose_frames();
+                    return Task::none();
+                }
+                if state.dirty || state.attempted_at.is_some() {
+                    self.dialog_pages.push_front(Dialog::CloseDraft);
+                } else if self.drop_active_draft() {
+                    self.close_compose_frames();
+                }
+            }
+            C::ContinueEditing => {
+                if matches!(self.dialog_pages.front(), Some(Dialog::CloseDraft)) {
+                    self.dialog_pages.pop_front();
+                }
+            }
+            C::Keep => {
+                if self.active_compose().is_some_and(|state| !state.busy()) {
+                    self.dialog_pages
+                        .retain(|dialog| !matches!(dialog, Dialog::CloseDraft));
+                    if self.persist_active_draft() {
+                        self.close_compose_frames();
+                    }
+                }
+            }
+            C::Discard => {
+                if self.active_compose().is_some_and(|state| !state.busy()) {
+                    self.dialog_pages
+                        .retain(|dialog| !matches!(dialog, Dialog::CloseDraft));
+                    if self.drop_active_draft() {
+                        self.close_compose_frames();
+                    }
+                }
+            }
+            C::PickImages => {
+                if self.active_compose().is_some_and(compose::State::editable) {
+                    if let Some(state) = self.active_compose_mut() {
+                        state.importing = true;
+                    }
+                    let request = self.compose_request;
+                    return cosmic::task::future(async move {
+                        Message::Compose(C::Picked(request, compose::network::pick_images().await))
+                    });
+                }
+            }
+            C::Picked(request, result) => {
+                if request != self.compose_request {
+                    return Task::none();
+                }
+                let Some(state) = self.active_compose() else {
+                    return Task::none();
+                };
+                match result {
+                    Ok(paths)
+                        if !paths.is_empty()
+                            && state.media.len() + paths.len()
+                                <= self.compose_limits.attachments
+                            && !state.has_poll =>
+                    {
+                        let store = self.compose_store.clone();
+                        let key = self.mastodon.cache_key();
+                        let id = state.id.clone();
+                        let limits = self.compose_limits.clone();
+                        return cosmic::task::future(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                store.import(&key, &id, &paths, &limits)
+                            })
+                            .await
+                            .unwrap_or_else(|_| Err(fl!("compose-file-error")));
+                            Message::Compose(C::Imported(request, result))
+                        });
+                    }
+                    Ok(paths) => {
+                        if let Some(state) = self.active_compose_mut() {
+                            state.importing = false;
+                            if !paths.is_empty() {
+                                state.error = Some(fl!("compose-too-many-images"));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(state) = self.active_compose_mut() {
+                            state.importing = false;
+                            state.error = Some(error);
+                        }
+                    }
+                }
+            }
+            C::Imported(request, result) => {
+                if request != self.compose_request {
+                    return Task::none();
+                }
+                if let Some(state) = self.active_compose_mut() {
+                    state.importing = false;
+                    match result {
+                        Ok(media) => {
+                            state.media.extend(media);
+                            state.changed();
+                        }
+                        Err(error) => state.error = Some(error),
+                    }
+                }
+                self.persist_active_draft();
+            }
+            C::Upload(id) => {
+                let Some(state) = self.active_compose().filter(|state| state.editable()) else {
+                    return Task::none();
+                };
+                let Some(media) = state
+                    .media
+                    .iter()
+                    .find(|media| media.id == id && media.stored_name.is_some())
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                let Some(name) = &media.stored_name else {
+                    return Task::none();
+                };
+                let Ok(path) =
+                    self.compose_store
+                        .asset_path(&self.mastodon.cache_key(), &state.id, name)
+                else {
+                    return Task::none();
+                };
+                if let Some(state) = self.active_compose_mut() {
+                    if let Some(media) = state.media.iter_mut().find(|media| media.id == id) {
+                        media.uploading = true;
+                        media.attachment = None;
+                        media.error = None;
+                        media
+                            .progress
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                let client = self.mastodon.clone();
+                let request = self.compose_request;
+                return cosmic::task::future(async move {
+                    Message::Compose(C::Uploaded(
+                        request,
+                        id,
+                        compose::network::upload(client, path, media).await,
+                    ))
+                });
+            }
+            C::Uploaded(request, id, result) => {
+                if request != self.compose_request {
+                    return Task::none();
+                }
+                let mut previews = vec![];
+                if let Some(state) = self.active_compose_mut() {
+                    if let Some(media) = state.media.iter_mut().find(|media| media.id == id) {
+                        media.uploading = false;
+                        match result {
+                            Ok(attachment) => {
+                                if let Some(url) = &attachment.preview_url {
+                                    previews.push(url.clone());
+                                }
+                                media.attachment = Some(attachment);
+                                media.error = None;
+                            }
+                            Err(error) => media.error = Some(error),
+                        }
+                    }
+                }
+                self.persist_active_draft();
+                return cosmic::task::message(Message::Fetch(previews));
+            }
+            C::Submit => {
+                let Some(state) = self.active_compose() else {
+                    return Task::none();
+                };
+                if state.busy() || !state.retry_safe() || !state.valid(&self.compose_limits) {
+                    return Task::none();
+                }
+                if state.attempted_at.is_some() {
+                    return self.begin_status_submission();
+                }
+                let state = state.clone();
+                if let Some(current) = self.active_compose_mut() {
+                    current.sending = true;
+                    current.error = None;
+                }
+                let client = self.mastodon.clone();
+                let request = self.compose_request;
+                return cosmic::task::future(async move {
+                    Message::Compose(C::Prepared(
+                        request,
+                        compose::network::prepare_media(client, state).await,
+                    ))
+                });
+            }
+            C::Prepared(request, result) => {
+                if request != self.compose_request {
+                    return Task::none();
+                }
+                if let Some(state) = self.active_compose_mut() {
+                    state.sending = false;
+                    match result {
+                        Ok(attachments) => {
+                            for attachment in attachments {
+                                if let Some(media) = state.media.iter_mut().find(|media| {
+                                    media
+                                        .attachment
+                                        .as_ref()
+                                        .is_some_and(|current| current.id == attachment.id)
+                                }) {
+                                    media.attachment = Some(attachment);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            state.error = Some(error);
+                            self.persist_active_draft();
+                            return Task::none();
+                        }
+                    }
+                }
+                return self.begin_status_submission();
+            }
+            C::Submitted(request, result) => {
+                if request != self.compose_request {
+                    return Task::none();
+                }
+                if self.active_compose().is_none() {
+                    return Task::none();
+                }
+                match result {
+                    Ok(published) => {
+                        let (editing, reply) = self
+                            .active_compose()
+                            .map(|state| (state.edit_id.is_some(), state.in_reply_to_id.clone()))
+                            .unwrap();
+                        if let Some(state) = self.active_compose_mut() {
+                            state.sending = false;
+                            state.published_id = Some(published.id.clone());
+                        }
+                        if self.persist_active_draft() {
+                            self.drop_active_draft();
+                            self.close_compose_frames();
+                        }
+                        let mut tasks = vec![self
+                            .toasts
+                            .push(Toast::new(if editing {
+                                fl!("compose-edited")
+                            } else {
+                                fl!("compose-posted")
+                            }))
+                            .map(cosmic::Action::App)];
+                        if let Some(post) = published.post {
+                            let images = crate::cache::extract_status_images(&post);
+                            self.cache.insert_status(post.clone());
+                            if !editing {
+                                tasks.push(
+                                    self.home
+                                        .update(timeline::Message::PrependStatus(post.clone())),
+                                );
+                            }
+                            if let Some(profile) = &mut self.profile {
+                                if profile.account.id == post.account.id
+                                    && !profile.posts.contains(&post.id)
+                                {
+                                    profile.posts.insert(0, post.id.clone());
+                                }
+                            }
+                            if let Some(thread) = &mut self.thread {
+                                if reply.as_ref() == Some(&thread.root)
+                                    && !thread.descendants.contains(&post.id)
+                                {
+                                    thread.descendants.push(post.id.clone());
+                                }
+                            }
+                            tasks.push(cosmic::task::message(Message::Fetch(images)));
+                        }
+                        return Task::batch(tasks);
+                    }
+                    Err(error) => {
+                        if let Some(state) = self.active_compose_mut() {
+                            state.failed(error);
+                        }
+                        self.persist_active_draft();
+                    }
+                }
+            }
+            C::AllowEditing => {
+                if let Some(state) = self.active_compose_mut() {
+                    if !state.busy() && !state.retry_safe() {
+                        state.attempted_at = None;
+                        state.changed();
+                    }
+                }
+                self.persist_active_draft();
+            }
+            C::Tick => (),
+            change => {
+                if let Some(state) = self.active_compose_mut().filter(|state| state.editable()) {
+                    match change {
+                        C::Warning(value) => state.content_warning = value,
+                        C::Spoiler(value) => state.spoiler_text = value,
+                        C::Sensitive(value) => state.sensitive = value,
+                        C::Visibility(value) => {
+                            if state.edit_id.is_none()
+                                && state.reply_ceiling.as_ref().is_none_or(|ceiling| {
+                                    compose::visibility_rank(&value)
+                                        >= compose::visibility_rank(ceiling)
+                                })
+                            {
+                                state.visibility = value;
+                            }
+                        }
+                        C::Language(value) => {
+                            state.language =
+                                (!value.trim().is_empty()).then(|| value.trim().to_string())
+                        }
+                        C::Alt(id, value) => {
+                            if let Some(media) = state.media.iter_mut().find(|media| media.id == id)
+                            {
+                                media.description = value;
+                            }
+                        }
+                        C::Remove(id) => state.media.retain(|media| media.id != id),
+                        _ => return Task::none(),
+                    }
+                    state.changed();
+                }
+                self.persist_active_draft();
+            }
+        }
+        Task::none()
+    }
+
     fn apply_onboarding_effect(&mut self, effect: onboarding::Effect) -> Task<Message> {
         use onboarding::{Effect, Failure};
         match effect {
@@ -1570,7 +2196,8 @@ impl AppModel {
         self.context_page = ContextPage::default();
         self.image_queue.clear();
         self.image_inflight.clear();
-        self.max_characters = 500;
+        self.compose_limits = compose::Limits::default();
+        self.load_drafts();
         let mastodon = self.mastodon.clone();
         self.hashtags = hashtags::Hashtags::new(mastodon.clone());
         self.lists = lists::Lists::new(mastodon.clone());
@@ -1644,6 +2271,12 @@ impl AppModel {
 
     /// Switch to the saved account at `index`, resetting per-account state.
     fn switch_account(&mut self, index: usize) -> Task<Message> {
+        if self.active_compose().is_some_and(compose::State::busy) {
+            return cosmic::task::message(Message::Error(fl!("compose-busy")));
+        }
+        if !self.persist_active_draft() {
+            return Task::none();
+        }
         let Some(session) = self.sessions.sessions.get(index).cloned() else {
             return Task::none();
         };
@@ -1684,6 +2317,14 @@ impl AppModel {
     /// Remove the saved account at `index`. If it was active, switches to
     /// another remaining account or falls back to a logged-out client.
     fn remove_account(&mut self, index: usize) -> Task<Message> {
+        if index == self.sessions.active {
+            if self.active_compose().is_some_and(compose::State::busy) {
+                return cosmic::task::message(Message::Error(fl!("compose-busy")));
+            }
+            if !self.persist_active_draft() {
+                return Task::none();
+            }
+        }
         let was_active = index == self.sessions.active;
         let removed_base_url = self
             .sessions
@@ -1948,11 +2589,9 @@ fn fetch_session_info(mastodon: Client) -> Task<Message> {
             }
         }),
         cosmic::task::future(async move {
-            match instance_client.get_instance().await {
-                Ok(response) => {
-                    Message::SetMaxCharacters(response.json.configuration.statuses.max_characters)
-                }
-                Err(err) => Message::Error(format!("Couldn't load instance info: {err}")),
+            match compose::network::limits(instance_client).await {
+                Ok(limits) => Message::SetComposeLimits(limits),
+                Err(error) => Message::Error(error),
             }
         }),
     ])
