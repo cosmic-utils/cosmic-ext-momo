@@ -56,7 +56,9 @@ impl State {
             self.comment.chars().count()
         )));
         if self.account.acct.contains('@') {
-            let toggle = widget::toggler(self.forward).label(fl!("reading-report-forward"));
+            let toggle = widget::toggler(self.forward)
+                .label(fl!("reading-report-forward"))
+                .spacing(8);
             controls = controls.push(if self.sending {
                 toggle
             } else {

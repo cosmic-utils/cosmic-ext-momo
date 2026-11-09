@@ -266,10 +266,12 @@ impl Timeline {
             content = content.push(widget::text::caption(fl!("feed-end")));
         }
         widget::scrollable(
-            widget::container(content)
-                .max_width(ui::CONTENT_WIDTH)
-                .padding(16)
-                .center_x(Length::Fill),
+            widget::container(
+                widget::container(content)
+                    .max_width(ui::CONTENT_WIDTH)
+                    .padding(16),
+            )
+            .center_x(Length::Fill),
         )
         .id(self.scroll_id())
         .direction(Direction::Vertical(Scrollbar::default()))

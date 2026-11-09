@@ -11,10 +11,7 @@ use megalodon::entities::{status::StatusVisibility, Account, Attachment, Status}
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicU64, Arc},
 };
 
 #[derive(Debug, Clone)]
@@ -244,6 +241,13 @@ impl State {
     pub fn busy(&self) -> bool {
         self.sending || self.importing || self.media.iter().any(|media| media.uploading)
     }
+    /// Whether metadata (alt text, uploads) may change; unlike `editable`, ignores running uploads.
+    pub fn accepts_edits(&self) -> bool {
+        !self.sending
+            && !self.importing
+            && self.attempted_at.is_none()
+            && self.published_id.is_none()
+    }
     pub fn editable(&self) -> bool {
         !self.busy() && self.attempted_at.is_none() && self.published_id.is_none()
     }
@@ -343,9 +347,12 @@ pub fn visibility_rank(value: &StatusVisibility) -> u8 {
 #[derive(Clone)]
 pub enum Message {
     New,
+    Pane(widget::segmented_button::Entity),
+    EditAlt(String),
     Reply(String),
     Edit(String),
     Resume(String),
+    DeleteDraft(String),
     Drafts,
     Warning(bool),
     Spoiler(String),
@@ -376,9 +383,39 @@ impl std::fmt::Debug for Message {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Images,
+    Warning,
+    Settings,
+}
+
+pub fn panes() -> widget::segmented_button::SingleSelectModel {
+    let mut model = widget::segmented_button::SingleSelectModel::default();
+    model
+        .insert()
+        .text(fl!("compose-images"))
+        .icon(widget::icon::from_name("insert-image-symbolic"))
+        .data(Pane::Images)
+        .activate();
+    model
+        .insert()
+        .text(fl!("content-warning"))
+        .icon(widget::icon::from_name("dialog-warning-symbolic"))
+        .data(Pane::Warning);
+    model
+        .insert()
+        .text(fl!("compose-language-tab"))
+        .icon(widget::icon::from_name("preferences-system-symbolic"))
+        .data(Pane::Settings);
+    model
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     state: &'a State,
     editor: &'a widget::text_editor::Content,
+    tabs: &'a widget::segmented_button::SingleSelectModel,
     reply_preview: Option<cosmic::Element<'a, app::Message>>,
     limits: &Limits,
     account_label: String,
@@ -386,16 +423,22 @@ pub fn view<'a>(
     store: &store::Store,
 ) -> widget::Dialog<'a, app::Message> {
     let editable = state.editable();
-    let mut controls = widget::column![widget::text::heading(account_label)].spacing(12);
+    let mut top = widget::column![].spacing(16).width(Length::Fill);
     if let Some(preview) = reply_preview {
-        controls = controls.push(preview);
-    }
-    if let Some(id) = &state.in_reply_to_id {
-        controls = controls.push(widget::text::caption(format!(
-            "{} {}",
-            fl!("compose-in-reply-to"),
-            id
-        )));
+        top = top.push(
+            widget::container(
+                widget::column![
+                    widget::text::caption(fl!("compose-replying")),
+                    widget::container(widget::scrollable(preview)).max_height(110),
+                ]
+                .spacing(8),
+            )
+            .padding(12)
+            .width(Length::Fill)
+            .class(cosmic::style::Container::Card),
+        );
+    } else if state.in_reply_to_id.is_some() {
+        top = top.push(widget::text::caption(fl!("compose-replying")));
     }
     let variants: Vec<_> = [
         StatusVisibility::Public,
@@ -411,30 +454,27 @@ pub fn view<'a>(
             .is_none_or(|ceiling| visibility_rank(value) >= visibility_rank(ceiling))
     })
     .collect();
-    if state.edit_id.is_some() {
-        controls = controls.push(widget::text(format!(
-            "{}: {}",
-            fl!("compose-visibility"),
-            state.visibility
-        )));
-    } else if editable {
+    let audience: cosmic::Element<'a, app::Message> = if state.edit_id.is_none() && editable {
         let labels = variants.iter().map(visibility_label).collect::<Vec<_>>();
         let selected = variants.iter().position(|value| value == &state.visibility);
-        controls = controls.push(widget::dropdown(labels, selected, move |index| {
+        widget::dropdown(labels, selected, move |index| {
             app::Message::Compose(Message::Visibility(variants[index].clone()))
-        }));
+        })
+        .into()
     } else {
-        controls = controls.push(widget::text(state.visibility.to_string()));
-    }
-    let warning = widget::toggler(state.content_warning).label(fl!("content-warning"));
-    controls = controls.push(if editable {
-        warning.on_toggle(|value| app::Message::Compose(Message::Warning(value)))
-    } else {
-        warning
-    });
+        widget::text(visibility_label(&state.visibility)).into()
+    };
+    let header = widget::row![
+        widget::text::caption(format!("{} {account_label}", fl!("compose-posting-as")))
+            .width(Length::Fill),
+        widget::text::caption(fl!("compose-audience")),
+        audience,
+    ]
+    .spacing(8)
+    .align_y(cosmic::iced::Alignment::Center);
     if state.content_warning {
         let input = widget::text_input(fl!("content-warning-placeholder"), &state.spoiler_text);
-        controls = controls.push(if editable {
+        top = top.push(if editable {
             input.on_input(|value| app::Message::Compose(Message::Spoiler(value)))
         } else {
             input
@@ -442,9 +482,27 @@ pub fn view<'a>(
     }
     let text_editor = widget::text_editor::text_editor(editor)
         .placeholder(fl!("whats-happening"))
-        .height(160.)
-        .padding(8);
-    controls = controls.push(if editable {
+        .size(16)
+        .font(cosmic::iced::Font::DEFAULT)
+        .style(|theme, status| {
+            let mut style = <cosmic::Theme as widget::text_editor::Catalog>::style(
+                theme,
+                &<cosmic::Theme as widget::text_editor::Catalog>::default(),
+                status,
+            );
+            // Use the theme's foreground: the upstream editor uses a fixed palette swatch.
+            style.value = theme.cosmic().on_bg_color().into();
+            style.placeholder = cosmic::iced::Color {
+                a: 0.6,
+                ..style.value
+            };
+            style.border.width = 1.0;
+            style.border.radius = 8.0.into();
+            style
+        })
+        .height(Length::Fill)
+        .padding(12);
+    top = top.push(if editable {
         text_editor.on_action(app::Message::EditorAction)
     } else {
         text_editor
@@ -459,91 +517,77 @@ pub fn view<'a>(
             },
             limits.reserved_url,
         ) as i64;
-    controls = controls.push(widget::text::caption(remaining.to_string()));
-    let language = widget::text_input(
-        fl!("compose-language"),
-        state.language.as_deref().unwrap_or(""),
-    );
-    controls = controls.push(if editable {
-        language.on_input(|value| app::Message::Compose(Message::Language(value)))
-    } else {
-        language
-    });
-    let sensitive = widget::toggler(state.sensitive).label(fl!("compose-sensitive"));
-    controls = controls.push(if editable {
-        sensitive.on_toggle(|value| app::Message::Compose(Message::Sensitive(value)))
-    } else {
-        sensitive
-    });
-    for media in &state.media {
-        let mut item = widget::column![widget::text(media.name.clone())].spacing(8);
-        if let Some(path) = media
-            .stored_name
-            .as_ref()
-            .and_then(|name| store.asset_path(&client.cache_key(), &state.id, name).ok())
-        {
-            if name_is_static_image(&media.name) {
-                item = item.push(widget::image(path).width(96).height(96));
-            }
-        }
-        let alt = widget::text_input(fl!("compose-alt"), &media.description);
-        let id = media.id.clone();
-        item = item.push(if editable {
-            alt.on_input(move |value| app::Message::Compose(Message::Alt(id.clone(), value)))
-        } else {
-            alt
-        });
-        item = item.push(widget::text::caption(format!(
-            "{}/{}",
-            media.description.chars().count(),
-            limits.description
-        )));
-        if media.uploading {
-            let percent = if media.bytes == 0 {
-                0.
+
+    let pane: cosmic::Element<'a, app::Message> = match tabs.active_data::<Pane>() {
+        Some(Pane::Warning) => {
+            let toggle = widget::toggler(state.content_warning);
+            let toggle = if editable {
+                toggle.on_toggle(|value| app::Message::Compose(Message::Warning(value)))
             } else {
-                (media.progress.load(Ordering::Relaxed) as f32 / media.bytes as f32 * 100.)
-                    .min(100.)
+                toggle
             };
-            item = item
-                .push(widget::determinate_linear(percent / 100.0))
-                .push(widget::text(if percent >= 100. {
-                    fl!("compose-processing")
-                } else {
-                    format!("{} {:.0}%", fl!("compose-uploading"), percent)
-                }));
-        } else if media.attachment.is_some() {
-            item = item.push(widget::text::caption(fl!("compose-uploaded")));
+            let sensitive = widget::toggler(state.sensitive);
+            let sensitive = if editable {
+                sensitive.on_toggle(|value| app::Message::Compose(Message::Sensitive(value)))
+            } else {
+                sensitive
+            };
+            widget::settings::section()
+                .add(widget::settings::item(fl!("compose-sensitive"), sensitive))
+                .add(widget::settings::item(fl!("content-warning"), toggle))
+                .into()
         }
-        if let Some(error) = &media.error {
-            item = item.push(widget::text(error));
+        Some(Pane::Settings) => {
+            let language = widget::text_input(
+                fl!("compose-language-placeholder"),
+                state.language.as_deref().unwrap_or(""),
+            );
+            let language = if editable {
+                language.on_input(|value| app::Message::Compose(Message::Language(value)))
+            } else {
+                language
+            };
+            widget::column![
+                widget::text::caption(fl!("compose-language")),
+                language,
+                widget::text::caption(fl!("compose-language-help")),
+            ]
+            .spacing(8)
+            .into()
         }
-        if editable {
-            let mut actions = widget::row![widget::button::standard(fl!("compose-remove"))
-                .on_press(app::Message::Compose(Message::Remove(media.id.clone())))]
-            .spacing(8);
-            if media.stored_name.is_some() {
-                actions = actions.push(
-                    widget::button::standard(if media.attachment.is_some() {
-                        fl!("compose-reupload")
-                    } else {
-                        fl!("compose-upload")
-                    })
-                    .on_press(app::Message::Compose(Message::Upload(media.id.clone()))),
+        _ => {
+            let add = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+                .icon_size(32)
+                .padding(20)
+                .class(cosmic::style::Button::Standard)
+                .on_press_maybe(
+                    (editable && !state.has_poll && state.media.len() < limits.attachments)
+                        .then_some(app::Message::Compose(Message::PickImages)),
                 );
+            #[cfg(target_os = "linux")]
+            let add = add.name(fl!("compose-add-images"));
+            let mut images = widget::row![add].spacing(12);
+            for media in &state.media {
+                images = images.push(media_card(state, media, editable, client, store));
             }
-            item = item.push(actions);
+            widget::scrollable(images)
+                .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+                    cosmic::iced::widget::scrollable::Scrollbar::default(),
+                ))
+                .into()
         }
-        controls = controls.push(item);
-    }
+    };
+    let pane = widget::container(pane)
+        .padding(12)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card);
+    let tabs = widget::segmented_control::horizontal(tabs)
+        .on_activate(|entity| app::Message::Compose(Message::Pane(entity)));
+    top = top.push(tabs).push(pane);
+
+    let mut controls = widget::column![].spacing(16).width(Length::Fill);
     if state.mixed_media() {
         controls = controls.push(widget::text(fl!("compose-mixed-media")));
-    }
-    if editable && !state.has_poll && state.media.len() < limits.attachments {
-        controls = controls.push(
-            widget::button::standard(fl!("compose-add-images"))
-                .on_press(app::Message::Compose(Message::PickImages)),
-        );
     }
     if let Some(error) = &state.error {
         controls = controls.push(widget::text(error));
@@ -575,7 +619,47 @@ pub fn view<'a>(
                 );
         }
     }
+    let has_extras = state.mixed_media()
+        || state.error.is_some()
+        || state.storage_error.is_some()
+        || state.published_id.is_some()
+        || state.importing
+        || state.sending
+        || state.attempted_at.is_some();
+    let extras: cosmic::Element<'a, app::Message> = if has_extras {
+        widget::container(widget::scrollable(controls).height(Length::Shrink))
+            .max_height(120)
+            .into()
+    } else {
+        widget::space::vertical().height(0).into()
+    };
+
+    let count = if remaining < 0 {
+        format!("{} {}", -remaining, fl!("compose-over-limit"))
+    } else {
+        format!("{} {}", remaining, fl!("compose-remaining"))
+    };
+    let summary = [
+        state
+            .language
+            .as_ref()
+            .map(|language| format!("{}: {language}", fl!("compose-language"))),
+        state.sensitive.then(|| fl!("compose-sensitive")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let footer = widget::row![
+        widget::text::caption(summary).width(Length::Fill),
+        widget::text::caption(count)
+    ]
+    .spacing(12);
     widget::dialog()
+        .width(Length::Fill)
+        .max_width(680)
+        .height(Length::Fill)
+        .max_height(680)
         .title(if state.edit_id.is_some() {
             fl!("compose-edit")
         } else if state.in_reply_to_id.is_some() {
@@ -584,8 +668,9 @@ pub fn view<'a>(
             fl!("new-post")
         })
         .control(
-            widget::container(widget::scrollable(controls))
-                .height(420.)
+            widget::column![header, top.height(Length::Fill), extras, footer]
+                .spacing(12)
+                .height(Length::Fill)
                 .width(Length::Fill),
         )
         .primary_action(
@@ -604,6 +689,157 @@ pub fn view<'a>(
         .secondary_action(
             widget::button::standard(fl!("compose-close"))
                 .on_press_maybe((!state.busy()).then_some(app::Message::Compose(Message::Close))),
+        )
+}
+
+fn media_card<'a>(
+    state: &State,
+    media: &'a Media,
+    editable: bool,
+    client: &crate::client::Client,
+    store: &store::Store,
+) -> cosmic::Element<'a, app::Message> {
+    let preview: cosmic::Element<'a, app::Message> = media
+        .stored_name
+        .as_ref()
+        .filter(|_| name_is_static_image(&media.name))
+        .and_then(|name| store.asset_path(&client.cache_key(), &state.id, name).ok())
+        .map(|path| {
+            widget::image(path)
+                .width(72)
+                .height(72)
+                .content_fit(cosmic::iced::ContentFit::Cover)
+                .into()
+        })
+        .unwrap_or_else(|| {
+            widget::container(widget::icon::from_name("insert-image-symbolic").size(32))
+                .center(72)
+                .into()
+        });
+    let thumbnail = widget::button::custom(preview)
+        .padding(0)
+        .class(cosmic::style::Button::Image)
+        .on_press_maybe(
+            editable.then(|| app::Message::Compose(Message::EditAlt(media.id.clone()))),
+        );
+    let overlay: Option<cosmic::Element<'a, app::Message>> = if media.uploading {
+        Some(widget::indeterminate_circular().size(32.).into())
+    } else if media.error.is_some() {
+        Some(
+            widget::icon::from_name("dialog-error-symbolic")
+                .size(32)
+                .into(),
+        )
+    } else {
+        None
+    };
+    let mut layers = vec![thumbnail.into()];
+    if let Some(overlay) = overlay {
+        layers.push(widget::container(overlay).center(72).into());
+    }
+    widget::column![
+        cosmic::iced::widget::Stack::with_children(layers)
+            .width(72)
+            .height(72),
+        crate::ui::icon_action(
+            "window-close-symbolic",
+            fl!("compose-remove"),
+            editable.then(|| app::Message::Compose(Message::Remove(media.id.clone()))),
+        )
+    ]
+    .spacing(4)
+    .align_x(cosmic::iced::Alignment::Center)
+    .into()
+}
+
+pub fn draft_card<'a>(draft: &'a State) -> cosmic::Element<'a, app::Message> {
+    let text = draft.text.as_deref().unwrap_or("").trim();
+    let title = if !draft.spoiler_text.trim().is_empty() && draft.content_warning {
+        draft.spoiler_text.trim()
+    } else {
+        text
+    };
+    let title = if title.is_empty() {
+        fl!("compose-untitled")
+    } else {
+        title.replace('\n', " ").chars().take(140).collect()
+    };
+    let mut details = vec![if draft.edit_id.is_some() {
+        fl!("compose-edit")
+    } else if draft.in_reply_to_id.is_some() {
+        fl!("reply")
+    } else {
+        fl!("new-post")
+    }];
+    details.push(visibility_label(&draft.visibility));
+    if !draft.media.is_empty() {
+        details.push(format!("{} {}", draft.media.len(), fl!("compose-images")));
+    }
+    if draft.content_warning {
+        details.push(fl!("content-warning"));
+    }
+    let id = draft.id.clone();
+    widget::container(
+        widget::column![
+            widget::text::body(title).width(Length::Fill),
+            widget::text::caption(details.join(" · ")),
+            widget::row![
+                widget::space::horizontal(),
+                widget::button::destructive(fl!("compose-discard-short"))
+                    .on_press(app::Message::Compose(Message::DeleteDraft(id.clone()))),
+                widget::button::suggested(fl!("compose-continue-draft"))
+                    .on_press(app::Message::Compose(Message::Resume(id))),
+            ]
+            .spacing(8),
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .width(Length::Fill)
+    .class(cosmic::style::Container::Card)
+    .into()
+}
+
+pub fn alt_input_id() -> widget::Id {
+    widget::Id::new("compose-alt-input")
+}
+
+pub fn alt_view<'a>(
+    state: &'a State,
+    media_id: &str,
+    limits: &Limits,
+    client: &crate::client::Client,
+    store: &store::Store,
+) -> widget::Dialog<'a, app::Message> {
+    let id = media_id.to_string();
+    let mut content = widget::column![].spacing(12);
+    if let Some(media) = state.media.iter().find(|media| media.id == id) {
+        if let Some(path) = media
+            .stored_name
+            .as_ref()
+            .filter(|_| name_is_static_image(&media.name))
+            .and_then(|name| store.asset_path(&client.cache_key(), &state.id, name).ok())
+        {
+            content = content.push(widget::image(path).height(200));
+        }
+        let input = widget::text_input(fl!("compose-alt"), &media.description)
+            .id(alt_input_id())
+            .on_input({
+                let id = id.clone();
+                move |value| app::Message::Compose(Message::Alt(id.clone(), value))
+            });
+        content = content.push(input).push(widget::text::caption(format!(
+            "{}/{}",
+            media.description.chars().count(),
+            limits.description
+        )));
+    }
+    widget::dialog()
+        .title(fl!("compose-alt"))
+        .control(content)
+        .primary_action(
+            widget::button::suggested(fl!("compose-done"))
+                .on_press(app::Message::Dialog(app::DialogAction::Close)),
         )
 }
 fn visibility_label(value: &StatusVisibility) -> String {

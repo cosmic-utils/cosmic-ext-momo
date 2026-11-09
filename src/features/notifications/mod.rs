@@ -331,10 +331,12 @@ impl Notifications {
         }
         content = content.push(list);
         widget::scrollable(
-            widget::container(content)
-                .max_width(ui::CONTENT_WIDTH)
-                .padding(16)
-                .center_x(Length::Fill),
+            widget::container(
+                widget::container(content)
+                    .max_width(ui::CONTENT_WIDTH)
+                    .padding(16),
+            )
+            .center_x(Length::Fill),
         )
         .height(Length::Fill)
         .width(Length::Fill)

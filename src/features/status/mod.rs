@@ -23,7 +23,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ToggleActions(String),
+    Menu,
     ToggleWarning(String),
     ToggleMedia(String),
     ToggleFilter(String, Context),
@@ -76,10 +76,6 @@ impl StatusOptions {
 
     pub fn all() -> StatusOptions {
         StatusOptions::new(true, true, true, true)
-    }
-
-    pub fn none() -> StatusOptions {
-        StatusOptions::new(false, false, false, false)
     }
 }
 
@@ -258,8 +254,8 @@ fn card<'a>(
 
 pub fn update(message: Message) -> Task<app::Message> {
     match message {
-        Message::ToggleActions(_)
-        | Message::ToggleWarning(_)
+        Message::Menu => Task::none(),
+        Message::ToggleWarning(_)
         | Message::ToggleMedia(_)
         | Message::ToggleFilter(_, _)
         | Message::ReloadFilters
@@ -395,50 +391,66 @@ fn actions<'a>(
             authenticated.then(|| Message::Bookmark(status.id.clone(), bookmarked))
         ),
         widget::space::horizontal(),
-        action(
-            "view-more-symbolic",
-            fl!("feed-more"),
-            None,
-            cache.reading.expanded_actions.contains(&status.id),
-            Some(Message::ToggleActions(status.id.clone()))
-        ),
+        more_menu(status, cache),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
-    let mut content = widget::column![buttons].spacing(8);
-    if cache.reading.expanded_actions.contains(&status.id) {
-        let mut secondary = vec![widget::button::standard(fl!("reading-copy-text"))
-            .on_press(Message::Copy(format!(
-                "{}\n{}",
-                status.spoiler_text,
-                html::plain(&status.content)
-            )))
-            .into()];
-        if authenticated && !cache.is_me(&status.account.id) {
-            secondary.push(
-                widget::button::standard(fl!("reading-report"))
-                    .on_press(Message::Report(
-                        status.account.clone(),
-                        Some(status.id.clone()),
-                    ))
-                    .into(),
-            );
-        }
-        if cache.is_me(&status.account.id) {
-            secondary.push(
-                widget::button::standard(fl!("compose-edit"))
-                    .on_press(Message::Edit(status.id.clone()))
-                    .into(),
-            );
-            secondary.push(
-                widget::button::destructive(fl!("delete-status"))
-                    .on_press(Message::Delete(status.id.clone()))
-                    .into(),
-            );
-        }
-        content = content.push(widget::flex_row(secondary).spacing(8));
+    Some(buttons.into())
+}
+
+fn more_menu(status: &Status, cache: &Cache) -> Element<'static, Message> {
+    use widget::menu::{self, ItemHeight, ItemWidth, Tree};
+    let item = |icon: &str, label: String, message| {
+        Tree::new(Into::<Element<'static, Message>>::into(
+            menu::menu_button(vec![
+                widget::icon::from_name(icon.to_string()).size(16).into(),
+                widget::space::horizontal().width(8).into(),
+                widget::text(label).into(),
+            ])
+            .on_press(message),
+        ))
+    };
+    let mut items = vec![item(
+        "edit-copy-symbolic",
+        fl!("reading-copy-text"),
+        Message::Copy(format!(
+            "{}\n{}",
+            status.spoiler_text,
+            html::plain(&status.content)
+        )),
+    )];
+    if cache.me.is_some() && !cache.is_me(&status.account.id) {
+        items.push(item(
+            "dialog-warning-symbolic",
+            fl!("reading-report"),
+            Message::Report(status.account.clone(), Some(status.id.clone())),
+        ));
     }
-    Some(content.into())
+    if cache.is_me(&status.account.id) {
+        items.push(item(
+            "edit-symbolic",
+            fl!("compose-edit"),
+            Message::Edit(status.id.clone()),
+        ));
+        items.push(item(
+            "user-trash-symbolic",
+            fl!("delete-status"),
+            Message::Delete(status.id.clone()),
+        ));
+    }
+    let root = widget::button::icon(widget::icon::from_name("view-more-symbolic"))
+        .tooltip(fl!("feed-more"))
+        .on_press(Message::Menu)
+        .class(cosmic::style::Button::MenuRoot);
+    #[cfg(target_os = "linux")]
+    let root = root.name(fl!("feed-more"));
+    menu::bar(vec![Tree::with_children(
+        Into::<Element<Message>>::into(root),
+        items,
+    )])
+    .item_height(ItemHeight::Dynamic(40))
+    .item_width(ItemWidth::Uniform(220))
+    .into()
 }
 
 fn media<'a>(
@@ -508,10 +520,25 @@ fn media<'a>(
 fn tags(status: &Status, options: StatusOptions) -> Option<Element<'_, Message>> {
     let spacing = cosmic::theme::active().cosmic().spacing;
 
-    let tags: Option<Element<_>> = (!status.tags.is_empty() && options.tags).then(|| {
-        let tags = status
-            .tags
-            .iter()
+    // Tags already written in the post body are shown there; only list the rest.
+    let body = html::plain(&status.content).to_lowercase();
+    let hidden = |name: &str| {
+        let needle = format!("#{}", name.to_lowercase());
+        body.match_indices(&needle).any(|(i, _)| {
+            !body[i + needle.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    let extra: Vec<_> = status
+        .tags
+        .iter()
+        .filter(|tag| !hidden(&tag.name))
+        .collect();
+    let tags: Option<Element<_>> = (!extra.is_empty() && options.tags).then(|| {
+        let tags = extra
+            .into_iter()
             .map(|tag| {
                 widget::button::link(format!("#{}", tag.name.clone()))
                     .on_press(Message::OpenLink(tag.url.clone()))
@@ -539,10 +566,12 @@ fn header<'a>(
         status.account.display_name.clone()
     };
     let identity = widget::column![
-        widget::button::link(display_name).on_press(Message::OpenAccount(status.account.clone())),
+        widget::button::link(display_name)
+            .padding(0)
+            .on_press(Message::OpenAccount(status.account.clone())),
         widget::text::caption(html::full_acct(&status.account)),
     ]
-    .spacing(2)
+    .spacing(0)
     .width(Length::Fill);
     let date = status.created_at.with_timezone(&chrono::Local);
     let label = if date.date_naive() == chrono::Local::now().date_naive() {

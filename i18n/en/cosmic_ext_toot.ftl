@@ -261,3 +261,19 @@ feed-boosted = Boosted
 feed-followers-only = Followers only
 feed-mentioned-only = Mentioned people only
 feed-app-menu = Application menu
+
+## Composer layout
+compose-posting-as = Posting as
+compose-replying = Replying to
+compose-audience = Audience
+compose-options = Post settings
+compose-language-placeholder = e.g. en, es, pt-BR
+compose-language-help = Use a language code, or leave blank to use your server’s default.
+compose-remaining = characters left
+compose-over-limit = characters over the limit
+compose-upload-failed = Upload failed
+compose-done = Done
+compose-language-tab = Language
+compose-no-drafts-hint = Posts you start but don't publish are saved here.
+compose-discard-short = Discard
+compose-continue-draft = Continue

@@ -94,19 +94,26 @@ impl Page {
         ]
     }
 
-    pub fn icon(&self) -> &str {
-        match self {
+    pub fn icon(&self) -> widget::icon::Handle {
+        if *self == Page::Hashtags {
+            return widget::icon::from_svg_bytes(
+                include_bytes!("../assets/icons/hashtag-symbolic.svg").as_slice(),
+            )
+            .symbolic(true);
+        }
+        widget::icon::from_name(match self {
             Page::Home => "user-home-symbolic",
             Page::Notifications => "emblem-important-symbolic",
             Page::Search => "folder-saved-search-symbolic",
             Page::Favorites => "starred-symbolic",
             Page::Bookmarks => "bookmark-new-symbolic",
-            Page::Hashtags => "lang-include-symbolic",
+            Page::Hashtags => unreachable!(),
             Page::Lists => "view-list-symbolic",
             Page::Explore => "find-location-symbolic",
             Page::Local => "network-server-symbolic",
             Page::Federated => "network-workgroup-symbolic",
-        }
+        })
+        .into()
     }
 }
 
@@ -148,6 +155,7 @@ pub struct AppModel {
     /// dialog's character counter. Defaults to Mastodon's standard limit
     /// until the real value is fetched after login.
     compose_limits: compose::Limits,
+    compose_tabs: cosmic::widget::segmented_button::SingleSelectModel,
     compose_store: compose::store::Store,
     drafts: Vec<compose::State>,
     drafts_readable: bool,
@@ -243,6 +251,8 @@ pub enum DialogAction {
 pub enum Dialog {
     Drafts,
     CloseDraft,
+    /// Edit the alt text of a compose attachment, by media id.
+    AltText(String),
     Report(reading::report::State),
     Compose(compose::State),
     SwitchInstance(String),
@@ -313,7 +323,7 @@ impl Application for AppModel {
             let id = nav
                 .insert()
                 .text(page.to_string())
-                .icon(widget::icon::from_name(page.icon()))
+                .icon(widget::icon(page.icon()))
                 .data::<Page>(page.clone())
                 .id();
 
@@ -378,6 +388,7 @@ impl Application for AppModel {
             image_inflight: HashSet::new(),
             toasts: Toasts::new(Message::CloseToast),
             compose_limits: compose::Limits::default(),
+            compose_tabs: compose::panes(),
             compose_store: compose::store::Store::default(),
             drafts: vec![],
             drafts_readable: true,
@@ -435,7 +446,7 @@ impl Application for AppModel {
                         .filter(|draft| draft.published_id.is_none())
                         .count()
                 ),
-                Some(widget::icon::from_name("document-edit-symbolic").into()),
+                Some(widget::icon::from_name("edit-symbolic").into()),
                 MenuAction::Drafts,
             ));
             items.push(menu::Item::Button(
@@ -490,16 +501,14 @@ impl Application for AppModel {
             vec![widget::button::standard(fl!("setup-add-account"))
                 .on_press(Message::StartOnboarding)
                 .into()]
-        } else if self.core.is_condensed() {
-            vec![crate::ui::icon_action(
-                "list-add-symbolic",
-                fl!("new-post"),
-                Some(Message::Compose(compose::Message::New)),
-            )]
         } else {
-            vec![widget::button::suggested(fl!("new-post"))
-                .on_press(Message::Compose(compose::Message::New))
-                .into()]
+            let button = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+                .icon_size(18)
+                .padding(8)
+                .on_press(Message::Compose(compose::Message::New));
+            #[cfg(target_os = "linux")]
+            let button = button.name(fl!("new-post"));
+            vec![button.into()]
         }
     }
 
@@ -621,60 +630,85 @@ impl Application for AppModel {
                     .as_ref()
                     .and_then(|id| self.cache.statuses.get(id))
                     .map(|post| {
-                        status::status(
-                            post,
-                            status::StatusOptions::none()
-                                .context(reading::filters::Context::Thread),
-                            &self.cache,
-                        )
-                        .map(Message::Status)
+                        let context = reading::filters::Context::Thread;
+                        let allowed = match self.cache.reading.filters.decision(post, context) {
+                            reading::filters::Decision::Allow
+                            | reading::filters::Decision::Blur(_) => true,
+                            reading::filters::Decision::Warn(..) => self
+                                .cache
+                                .reading
+                                .filter_reveals
+                                .contains(&(post.id.clone(), context)),
+                            _ => false,
+                        };
+                        if !allowed {
+                            return widget::text(fl!("reading-filtered")).into();
+                        }
+                        let text = if self.cache.reading.content_visible(post) {
+                            reading::html::plain(&post.content)
+                        } else {
+                            post.spoiler_text.clone()
+                        };
+                        widget::column![
+                            widget::text::caption(reading::html::full_acct(&post.account)),
+                            widget::selectable_text(text)
+                        ]
+                        .spacing(4)
+                        .into()
                     });
                 compose::view(
                     state,
                     &self.dialog_editor,
+                    &self.compose_tabs,
                     preview,
                     &self.compose_limits,
-                    self.sessions
-                        .active_session()
-                        .map(|session| session.label())
+                    self.cache
+                        .me
+                        .as_ref()
+                        .map(reading::html::full_acct)
                         .unwrap_or_default(),
                     &self.mastodon,
                     &self.compose_store,
                 )
             }
             Dialog::Drafts => {
+                let drafts: Vec<_> = self
+                    .drafts
+                    .iter()
+                    .filter(|draft| draft.published_id.is_none())
+                    .rev()
+                    .collect();
                 let mut content = widget::column![].spacing(12);
                 if !self.drafts_readable {
                     content = content.push(widget::text(fl!("compose-storage-error")));
                 }
-                for draft in self
-                    .drafts
-                    .iter()
-                    .filter(|draft| draft.published_id.is_none())
-                {
-                    let label = draft
-                        .text
-                        .as_deref()
-                        .unwrap_or("")
-                        .replace('\n', " ")
-                        .chars()
-                        .take(60)
-                        .collect::<String>();
-                    content = content.push(
-                        widget::button::standard(if label.trim().is_empty() {
-                            fl!("compose-untitled")
-                        } else {
-                            label
-                        })
-                        .on_press(Message::Compose(compose::Message::Resume(draft.id.clone()))),
-                    );
+                for draft in &drafts {
+                    content = content.push(compose::draft_card(draft));
                 }
-                if self.drafts.is_empty() {
-                    content = content.push(widget::text(fl!("compose-no-drafts")));
+                if drafts.is_empty() {
+                    content = content.push(
+                        widget::container(
+                            widget::column![
+                                widget::icon::from_name("edit-symbolic").size(48),
+                                widget::text::heading(fl!("compose-no-drafts")),
+                                widget::text::caption(fl!("compose-no-drafts-hint")),
+                            ]
+                            .spacing(8)
+                            .align_x(cosmic::iced::Alignment::Center),
+                        )
+                        .center_x(Length::Fill)
+                        .padding(32),
+                    );
                 }
                 widget::dialog()
                     .title(fl!("compose-drafts"))
-                    .control(widget::container(widget::scrollable(content)).height(300.))
+                    .control(
+                        widget::container(widget::scrollable(content))
+                            .height(Length::Fill)
+                            .width(Length::Fill),
+                    )
+                    .height(Length::Fill)
+                    .max_height(520)
                     .primary_action(
                         widget::button::standard(fl!("compose-close"))
                             .on_press(Message::Dialog(DialogAction::Close)),
@@ -696,6 +730,16 @@ impl Application for AppModel {
                         .on_press(Message::Compose(compose::Message::Discard)),
                 ),
             Dialog::SwitchInstance(instance) => self.switch_instance(instance.clone()),
+            Dialog::AltText(id) => match self.active_compose() {
+                Some(state) => compose::alt_view(
+                    state,
+                    id,
+                    &self.compose_limits,
+                    &self.mastodon,
+                    &self.compose_store,
+                ),
+                None => return None,
+            },
             Dialog::Logout => self.logout(),
             Dialog::DeleteStatus(id) => self.delete_status(id.clone()),
             Dialog::Image(..) | Dialog::Report(_) => unreachable!("handled above"),
@@ -819,6 +863,39 @@ impl Application for AppModel {
             }
             None => (),
         };
+
+        // Preload these pages in the background so they're ready on first visit.
+        let active = self.nav.active_data::<Page>();
+        if active != Some(&Page::Notifications) {
+            subscriptions.push(
+                self.notifications
+                    .subscription()
+                    .map(Message::Notifications),
+            );
+        }
+        if active != Some(&Page::Search) {
+            subscriptions.push(self.search.subscription().map(Message::Search));
+        }
+        if active != Some(&Page::Favorites) {
+            subscriptions.push(self.favorites.subscription().map(Message::Favorites));
+        }
+        if active != Some(&Page::Bookmarks) {
+            subscriptions.push(self.bookmarks.subscription().map(Message::Bookmarks));
+        }
+        if active != Some(&Page::Hashtags) {
+            subscriptions.push(self.hashtags.subscription().map(Message::Hashtags));
+        }
+        if active != Some(&Page::Lists) {
+            subscriptions.push(self.lists.subscription().map(Message::Lists));
+        }
+        if !self.mastodon.is_authenticated() {
+            if active != Some(&Page::Local) {
+                subscriptions.push(self.local.subscription().map(Message::Local));
+            }
+            if active != Some(&Page::Federated) {
+                subscriptions.push(self.federated.subscription().map(Message::Federated));
+            }
+        }
 
         if self.mastodon.is_authenticated() {
             subscriptions.push(
@@ -1161,11 +1238,6 @@ impl Application for AppModel {
                 _ => tasks.push(accounts::update(message)),
             },
             Message::Status(message) => match message {
-                status::Message::ToggleActions(id) => {
-                    if !self.cache.reading.expanded_actions.remove(&id) {
-                        self.cache.reading.expanded_actions.insert(id);
-                    }
-                }
                 status::Message::ToggleWarning(id) => {
                     if !self.cache.reading.warnings.remove(&id) {
                         self.cache.reading.warnings.insert(id);
@@ -1511,7 +1583,7 @@ impl Application for AppModel {
                                 self.dialog_pages.push_front(Dialog::Compose(state));
                                 tasks.push(self.update(Message::Compose(compose::Message::Submit)));
                             }
-                            Dialog::Drafts | Dialog::CloseDraft => {}
+                            Dialog::Drafts | Dialog::CloseDraft | Dialog::AltText(_) => {}
                             Dialog::DeleteStatus(id) => {
                                 let mastodon = self.mastodon.clone();
                                 tasks.push(cosmic::task::future(async move {
@@ -1662,30 +1734,20 @@ impl AppModel {
     }
     fn close_compose_frames(&mut self) {
         self.compose_request += 1;
-        self.dialog_pages
-            .retain(|dialog| !matches!(dialog, Dialog::Compose(_) | Dialog::CloseDraft));
+        self.dialog_pages.retain(|dialog| {
+            !matches!(
+                dialog,
+                Dialog::Compose(_) | Dialog::CloseDraft | Dialog::AltText(_)
+            )
+        });
         self.dialog_editor = widget::text_editor::Content::default();
     }
     fn drop_active_draft(&mut self) -> bool {
         let Some(id) = self.active_compose().map(|state| state.id.clone()) else {
             return true;
         };
-        let candidate: Vec<_> = self
-            .drafts
-            .iter()
-            .filter(|draft| draft.id != id)
-            .cloned()
-            .collect();
-        match self
-            .compose_store
-            .save(&self.mastodon.cache_key(), &candidate)
-        {
-            Ok(()) => {
-                self.drafts = candidate;
-                self.compose_store
-                    .remove_assets(&self.mastodon.cache_key(), &id);
-                true
-            }
+        match self.drop_draft(&id) {
+            Ok(()) => true,
             Err(error) => {
                 if let Some(state) = self.active_compose_mut() {
                     state.storage_error = Some(error);
@@ -1693,6 +1755,19 @@ impl AppModel {
                 false
             }
         }
+    }
+    fn drop_draft(&mut self, id: &str) -> Result<(), String> {
+        let candidate: Vec<_> = self
+            .drafts
+            .iter()
+            .filter(|draft| draft.id != id)
+            .cloned()
+            .collect();
+        let key = self.mastodon.cache_key();
+        self.compose_store.save(&key, &candidate)?;
+        self.drafts = candidate;
+        self.compose_store.remove_assets(&key, id);
+        Ok(())
     }
     fn begin_status_submission(&mut self) -> Task<Message> {
         let previous_attempt = self.active_compose().and_then(|state| state.attempted_at);
@@ -1772,6 +1847,14 @@ impl AppModel {
                 }
                 self.load_drafts();
                 self.dialog_pages.push_front(Dialog::Drafts);
+            }
+            C::DeleteDraft(id) => {
+                if self.active_compose().is_some() {
+                    return Task::none();
+                }
+                if let Err(error) = self.drop_draft(&id) {
+                    return cosmic::task::message(Message::Error(error));
+                }
             }
             C::Resume(id) => {
                 if let Some(state) = self.drafts.iter().find(|draft| draft.id == id).cloned() {
@@ -1880,8 +1963,15 @@ impl AppModel {
                     state.importing = false;
                     match result {
                         Ok(media) => {
+                            let ids: Vec<_> = media.iter().map(|m| m.id.clone()).collect();
                             state.media.extend(media);
                             state.changed();
+                            self.persist_active_draft();
+                            return Task::batch(
+                                ids.into_iter().map(|id| {
+                                    cosmic::task::message(Message::Compose(C::Upload(id)))
+                                }),
+                            );
                         }
                         Err(error) => state.error = Some(error),
                     }
@@ -1889,7 +1979,8 @@ impl AppModel {
                 self.persist_active_draft();
             }
             C::Upload(id) => {
-                let Some(state) = self.active_compose().filter(|state| state.editable()) else {
+                let Some(state) = self.active_compose().filter(|state| state.accepts_edits())
+                else {
                     return Task::none();
                 };
                 let Some(media) = state
@@ -2077,6 +2168,24 @@ impl AppModel {
                 }
                 self.persist_active_draft();
             }
+            C::Pane(entity) => self.compose_tabs.activate(entity),
+            C::EditAlt(id) => {
+                if self.active_compose().is_some_and(|state| {
+                    state.accepts_edits() && state.media.iter().any(|m| m.id == id)
+                }) {
+                    self.dialog_pages.push_front(Dialog::AltText(id));
+                    return widget::text_input::focus(compose::alt_input_id());
+                }
+            }
+            C::Alt(id, value) => {
+                if let Some(state) = self.active_compose_mut().filter(|s| s.accepts_edits()) {
+                    if let Some(media) = state.media.iter_mut().find(|media| media.id == id) {
+                        media.description = value;
+                    }
+                    state.changed();
+                }
+                self.persist_active_draft();
+            }
             C::Tick => (),
             change => {
                 if let Some(state) = self.active_compose_mut().filter(|state| state.editable()) {
@@ -2097,12 +2206,6 @@ impl AppModel {
                         C::Language(value) => {
                             state.language =
                                 (!value.trim().is_empty()).then(|| value.trim().to_string())
-                        }
-                        C::Alt(id, value) => {
-                            if let Some(media) = state.media.iter_mut().find(|media| media.id == id)
-                            {
-                                media.description = value;
-                            }
                         }
                         C::Remove(id) => state.media.retain(|media| media.id != id),
                         _ => return Task::none(),
@@ -2678,7 +2781,7 @@ where
                 .nav
                 .insert()
                 .text(page.to_string())
-                .icon(widget::icon::from_name(page.icon()))
+                .icon(widget::icon(page.icon()))
                 .data::<Page>(page.clone())
                 .id();
             if self.mastodon.is_authenticated() && matches!(page, Page::Favorites | Page::Explore) {
