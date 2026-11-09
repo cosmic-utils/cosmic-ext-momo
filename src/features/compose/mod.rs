@@ -418,6 +418,7 @@ pub fn view<'a>(
     account_label: String,
     client: &crate::client::Client,
     store: &store::Store,
+    cache: &crate::cache::Cache,
 ) -> widget::Dialog<'a, app::Message> {
     let editable = state.editable();
     let mut top = widget::column![].spacing(16).width(Length::Fill);
@@ -556,7 +557,7 @@ pub fn view<'a>(
             let add = add.name(fl!("compose-add-images"));
             let mut images = widget::row![add].spacing(12);
             for media in &state.media {
-                images = images.push(media_card(state, media, editable, client, store));
+                images = images.push(media_card(state, media, editable, client, store, cache));
             }
             widget::scrollable(images)
                 .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
@@ -686,20 +687,22 @@ fn media_card<'a>(
     editable: bool,
     client: &crate::client::Client,
     store: &store::Store,
+    cache: &crate::cache::Cache,
 ) -> cosmic::Element<'a, app::Message> {
-    let preview: cosmic::Element<'a, app::Message> = preview_path(state, media, client, store)
-        .map(|path| {
-            widget::image(path)
-                .width(72)
-                .height(72)
-                .content_fit(cosmic::iced::ContentFit::Cover)
-                .into()
-        })
-        .unwrap_or_else(|| {
-            widget::container(widget::icon::from_name("insert-image-symbolic").size(32))
-                .center(72)
-                .into()
-        });
+    let preview: cosmic::Element<'a, app::Message> =
+        preview_handle(state, media, client, store, cache)
+            .map(|handle| {
+                widget::image(handle)
+                    .width(72)
+                    .height(72)
+                    .content_fit(cosmic::iced::ContentFit::Cover)
+                    .into()
+            })
+            .unwrap_or_else(|| {
+                widget::container(widget::icon::from_name("insert-image-symbolic").size(32))
+                    .center(72)
+                    .into()
+            });
     let thumbnail = widget::button::custom(preview)
         .padding(0)
         .class(cosmic::style::Button::Image)
@@ -794,12 +797,13 @@ pub fn alt_view<'a>(
     limits: &Limits,
     client: &crate::client::Client,
     store: &store::Store,
+    cache: &crate::cache::Cache,
 ) -> widget::Dialog<'a, app::Message> {
     let id = media_id.to_string();
     let mut content = widget::column![].spacing(12);
     if let Some(media) = state.media.iter().find(|media| media.id == id) {
-        if let Some(path) = preview_path(state, media, client, store) {
-            content = content.push(widget::image(path).height(200));
+        if let Some(handle) = preview_handle(state, media, client, store, cache) {
+            content = content.push(widget::image(handle).height(200));
         }
         let input = widget::text_input(fl!("compose-alt"), &media.description)
             .id(alt_input_id())
@@ -830,6 +834,48 @@ fn visibility_label(value: &StatusVisibility) -> String {
         StatusVisibility::Local => fl!("compose-local"),
     }
 }
+fn remote_preview_url(media: &Media) -> Option<&str> {
+    let attachment = media.attachment.as_ref()?;
+    attachment
+        .preview_url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .or_else(|| {
+            matches!(
+                attachment.r#type,
+                megalodon::entities::attachment::AttachmentType::Image
+            )
+            .then_some(attachment.url.as_str())
+            .filter(|url| !url.is_empty())
+        })
+}
+
+impl State {
+    pub fn preview_urls(&self) -> Vec<String> {
+        self.media
+            .iter()
+            .filter_map(remote_preview_url)
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn preview_handle(
+    state: &State,
+    media: &Media,
+    client: &crate::client::Client,
+    store: &store::Store,
+    cache: &crate::cache::Cache,
+) -> Option<widget::image::Handle> {
+    preview_path(state, media, client, store)
+        .map(widget::image::Handle::from_path)
+        .or_else(|| {
+            remote_preview_url(media)
+                .and_then(|url| cache.handles.get(url))
+                .cloned()
+        })
+}
+
 fn preview_path(
     state: &State,
     media: &Media,

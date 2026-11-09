@@ -237,6 +237,7 @@ pub enum Message {
     /// only logging it and silently dropping the failed action.
     Error(String),
     CloseToast(ToastId),
+    Surface(cosmic::surface::Action<Message>),
     NavigateMedia(bool),
     VideoTick,
     VideoPause,
@@ -258,6 +259,11 @@ pub enum DialogAction {
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Drafts,
+    EditLoading {
+        id: String,
+        request: u64,
+        error: Option<String>,
+    },
     CloseDraft,
     /// Edit the alt text of a compose attachment, by media id.
     AltText(String),
@@ -490,6 +496,8 @@ impl Application for AppModel {
             menu::items(&self.key_binds, items),
         )])
         .item_height(ItemHeight::Dynamic(40))
+        .window_id_maybe(self.core.main_window_id())
+        .on_surface_action(Message::Surface)
         .item_width(ItemWidth::Uniform(260))
         .spacing(spacing.space_xxxs.into());
 
@@ -635,6 +643,33 @@ impl Application for AppModel {
         }
 
         let dialog = match dialog_page {
+            Dialog::EditLoading { id, error, .. } => {
+                let mut content = widget::column![]
+                    .spacing(16)
+                    .align_x(cosmic::iced::Alignment::Center);
+                if let Some(error) = error {
+                    content = content.push(widget::text(error.clone()));
+                } else {
+                    content = content
+                        .push(widget::indeterminate_circular().size(32.0))
+                        .push(widget::text(fl!("compose-loading-edit")));
+                }
+                let dialog = widget::dialog()
+                    .title(fl!("compose-edit"))
+                    .control(content)
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel"))
+                            .on_press(Message::Dialog(DialogAction::Close)),
+                    );
+                if error.is_some() {
+                    dialog.primary_action(
+                        widget::button::suggested(fl!("compose-retry"))
+                            .on_press(Message::Compose(compose::Message::Edit(id.clone()))),
+                    )
+                } else {
+                    dialog
+                }
+            }
             Dialog::Compose(state) => {
                 let preview = state
                     .in_reply_to_id
@@ -680,6 +715,7 @@ impl Application for AppModel {
                         .unwrap_or_default(),
                     &self.mastodon,
                     &self.compose_store,
+                    &self.cache,
                 )
             }
             Dialog::Drafts => {
@@ -748,6 +784,7 @@ impl Application for AppModel {
                     &self.compose_limits,
                     &self.mastodon,
                     &self.compose_store,
+                    &self.cache,
                 ),
                 None => return None,
             },
@@ -845,6 +882,20 @@ impl Application for AppModel {
             return Subscription::batch(subscriptions);
         }
 
+        if self.cache.reading.post_menu.is_some() {
+            subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
+                matches!(
+                    event,
+                    cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                        key: cosmic::iced::keyboard::Key::Named(
+                            cosmic::iced::keyboard::key::Named::Escape
+                        ),
+                        ..
+                    })
+                )
+                .then_some(Message::Status(status::Message::Menu(None)))
+            }));
+        }
         if self.video.is_some() {
             subscriptions.push(
                 cosmic::iced::time::every(std::time::Duration::from_millis(33))
@@ -965,6 +1016,9 @@ impl Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         let mut tasks = vec![];
         match message {
+            Message::Surface(action) => {
+                return cosmic::task::message(cosmic::Action::Surface(action))
+            }
             Message::Scoped(generation, message) => {
                 if generation != self.generation {
                     return Task::none();
@@ -1275,6 +1329,11 @@ impl Application for AppModel {
                 _ => tasks.push(accounts::update(message)),
             },
             Message::Status(message) => match message {
+                status::Message::Menu(id) => self.cache.reading.post_menu = id,
+                status::Message::MenuAction(message) => {
+                    self.cache.reading.post_menu = None;
+                    return self.update(Message::Status(*message));
+                }
                 status::Message::ToggleWarning(id) => {
                     if !self.cache.reading.warnings.remove(&id) {
                         self.cache.reading.warnings.insert(id);
@@ -1651,7 +1710,10 @@ impl Application for AppModel {
                                 self.dialog_pages.push_front(Dialog::Compose(state));
                                 tasks.push(self.update(Message::Compose(compose::Message::Submit)));
                             }
-                            Dialog::Drafts | Dialog::CloseDraft | Dialog::AltText(_) => {}
+                            Dialog::Drafts
+                            | Dialog::EditLoading { .. }
+                            | Dialog::CloseDraft
+                            | Dialog::AltText(_) => {}
                             Dialog::DeleteStatus(id) => {
                                 let mastodon = self.mastodon.clone();
                                 tasks.push(cosmic::task::future(async move {
@@ -1804,7 +1866,12 @@ impl AppModel {
         result.is_ok()
     }
     fn open_compose(&mut self, state: compose::State) -> Task<Message> {
-        if self.active_compose().is_some() {
+        if self.active_compose().is_some()
+            || self
+                .dialog_pages
+                .iter()
+                .any(|dialog| matches!(dialog, Dialog::EditLoading { .. }))
+        {
             return cosmic::task::message(Message::Error(fl!("compose-existing")));
         }
         if self.cache.me.is_none() || self.mastodon.account_id.is_empty() {
@@ -1814,9 +1881,10 @@ impl AppModel {
         self.dialog_editor = widget::text_editor::Content::with_text(&state.text);
         self.dialog_pages
             .retain(|dialog| !matches!(dialog, Dialog::Drafts));
+        let previews = state.preview_urls();
         self.dialog_pages.push_front(Dialog::Compose(state));
         self.persist_active_draft();
-        Task::none()
+        cosmic::task::message(Message::Fetch(previews))
     }
     fn close_compose_frames(&mut self) {
         self.compose_request += 1;
@@ -1899,17 +1967,18 @@ impl AppModel {
                 if self.active_compose().is_some() {
                     return cosmic::task::message(Message::Error(fl!("compose-existing")));
                 }
-                if !self.cache.is_me(
-                    self.cache
-                        .statuses
-                        .get(&id)
-                        .map(|post| post.account.id.as_str())
-                        .unwrap_or(""),
-                ) {
-                    return Task::none();
+                if !self.mastodon.is_authenticated() {
+                    return cosmic::task::message(Message::Error(fl!("compose-account-loading")));
                 }
                 self.compose_request += 1;
                 let request = self.compose_request;
+                self.dialog_pages
+                    .retain(|dialog| !matches!(dialog, Dialog::EditLoading { .. }));
+                self.dialog_pages.push_front(Dialog::EditLoading {
+                    id: id.clone(),
+                    request,
+                    error: None,
+                });
                 let client = self.mastodon.clone();
                 return cosmic::task::future(async move {
                     Message::Compose(C::EditLoaded(
@@ -1919,12 +1988,25 @@ impl AppModel {
                 });
             }
             C::EditLoaded(request, result) => {
-                if request != self.compose_request || self.active_compose().is_some() {
+                if request != self.compose_request {
                     return Task::none();
                 }
+                let Some(index) = self.dialog_pages.iter().position(|dialog|
+                    matches!(dialog, Dialog::EditLoading { request: pending, .. } if *pending == request))
+                else { return Task::none(); };
                 return match result {
-                    Ok(state) => self.open_compose(state),
-                    Err(error) => cosmic::task::message(Message::Error(error)),
+                    Ok(state) => {
+                        self.dialog_pages.remove(index);
+                        self.open_compose(state)
+                    }
+                    Err(error) => {
+                        if let Dialog::EditLoading { error: current, .. } =
+                            &mut self.dialog_pages[index]
+                        {
+                            *current = Some(error);
+                        }
+                        Task::none()
+                    }
                 };
             }
             C::Drafts => {
