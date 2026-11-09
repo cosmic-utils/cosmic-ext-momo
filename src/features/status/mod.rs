@@ -42,8 +42,8 @@ pub enum Message {
     Boost(String, bool),
     Bookmark(String, bool),
     OpenLink(String),
-    /// Show an image attachment in an overlay: (cached preview URL, original URL).
-    ViewImage(String, String),
+    /// Open the post image gallery at the selected index.
+    ViewImage(Vec<(String, String)>, usize),
     /// Request to delete one of the authenticated user's own statuses;
     /// opens a confirmation dialog rather than deleting immediately.
     Delete(String),
@@ -287,9 +287,9 @@ pub fn update(message: Message) -> Task<app::Message> {
             Message::Bookmark(status_id, bookmarked),
         )),
         Message::OpenLink(url) => cosmic::task::message(app::Message::Open(url.to_string())),
-        Message::ViewImage(preview_url, original_url) => {
+        Message::ViewImage(images, index) => {
             cosmic::task::message(app::Message::Dialog(app::DialogAction::Open(
-                app::Dialog::Image(preview_url, original_url),
+                app::Dialog::Image(images, index),
             )))
         }
         Message::Delete(status_id) => cosmic::task::message(app::Message::Dialog(
@@ -466,6 +466,25 @@ fn media<'a>(
 
     let spacing = cosmic::theme::active().cosmic().spacing;
 
+    let images: Vec<_> = status
+        .media_attachments
+        .iter()
+        .filter_map(|media| {
+            matches!(
+                media.r#type,
+                megalodon::entities::attachment::AttachmentType::Image
+                    | megalodon::entities::attachment::AttachmentType::Gifv
+            )
+            .then(|| {
+                media
+                    .preview_url
+                    .as_ref()
+                    .map(|preview| (preview.clone(), media.url.clone()))
+            })
+            .flatten()
+        })
+        .collect();
+
     let attachments = status
         .media_attachments
         .iter()
@@ -476,9 +495,13 @@ fn media<'a>(
                     | megalodon::entities::attachment::AttachmentType::Gifv
             );
             let on_press = match &media.preview_url {
-                Some(preview_url) if is_picture => {
-                    Message::ViewImage(preview_url.clone(), media.url.clone())
-                }
+                Some(preview_url) if is_picture => Message::ViewImage(
+                    images.clone(),
+                    images
+                        .iter()
+                        .position(|image| image == &(preview_url.clone(), media.url.clone()))
+                        .unwrap_or(0),
+                ),
                 _ => Message::OpenLink(media.url.clone()),
             };
 

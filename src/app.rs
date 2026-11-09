@@ -234,6 +234,7 @@ pub enum Message {
     /// only logging it and silently dropping the failed action.
     Error(String),
     CloseToast(ToastId),
+    NavigateImage(bool),
     /// Periodic tick: flush every feed's cache to disk if anything changed.
     FlushCache,
     None,
@@ -258,8 +259,8 @@ pub enum Dialog {
     SwitchInstance(String),
     Logout,
     DeleteStatus(String),
-    /// Show an image attachment full-size: (cached preview URL, original URL).
-    Image(String, String),
+    /// Post image URLs (preview, original) and the selected index.
+    Image(Vec<(String, String)>, usize),
 }
 
 pub struct Flags {
@@ -614,8 +615,8 @@ impl Application for AppModel {
         // The image viewer is a full-window overlay (like cosmic-files' gallery
         // view), not a small centered dialog box, so it's built and returned
         // before the `widget::dialog()`-based match below.
-        if let Some(Dialog::Image(preview_url, original_url)) = self.dialog_pages.front() {
-            return Some(self.view_image(preview_url.clone(), original_url.clone()));
+        if let Some(Dialog::Image(images, index)) = self.dialog_pages.front() {
+            return Some(self.view_image(images, *index));
         }
 
         let dialog_page = self.dialog_pages.front()?;
@@ -832,6 +833,25 @@ impl Application for AppModel {
 
         if self.onboarding.is_some() {
             return Subscription::batch(subscriptions);
+        }
+
+        if matches!(self.dialog_pages.front(), Some(Dialog::Image(..))) {
+            subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
+                let cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                    key,
+                    ..
+                }) = event
+                else {
+                    return None;
+                };
+                use cosmic::iced::keyboard::{key::Named, Key};
+                match key {
+                    Key::Named(Named::ArrowLeft) => Some(Message::NavigateImage(false)),
+                    Key::Named(Named::ArrowRight) => Some(Message::NavigateImage(true)),
+                    Key::Named(Named::Escape) => Some(Message::Dialog(DialogAction::Close)),
+                    _ => None,
+                }
+            }));
         }
 
         match self.nav.active_data::<Page>() {
@@ -1558,6 +1578,17 @@ impl Application for AppModel {
             }
             Message::ToggleContextDrawer => {
                 self.core.window.show_context = !self.core.window.show_context;
+            }
+            Message::NavigateImage(forward) => {
+                if let Some(Dialog::Image(images, index)) = self.dialog_pages.front_mut() {
+                    if forward {
+                        if *index + 1 < images.len() {
+                            *index += 1;
+                        }
+                    } else {
+                        *index = index.saturating_sub(1);
+                    }
+                }
             }
             Message::Dialog(action) => match action {
                 DialogAction::Open(dialog) => match dialog {
@@ -2584,13 +2615,14 @@ impl AppModel {
     /// A full-window image overlay, in the same spirit as cosmic-files'
     /// gallery view: a translucent backdrop covering the whole window with
     /// the image centered and content-fit, rather than a small dialog box.
-    fn view_image(&self, preview_url: String, original_url: String) -> Element<'_, Message> {
+    fn view_image(&self, images: &[(String, String)], index: usize) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
+        let (preview_url, original_url) = &images[index];
         let image: Element<'_, Message> = self
             .cache
             .handles
-            .get(&preview_url)
+            .get(preview_url)
             .map(|handle| {
                 widget::image(handle)
                     .content_fit(cosmic::iced::ContentFit::Contain)
@@ -2614,7 +2646,7 @@ impl AppModel {
             widget::space::horizontal(),
             widget::button::icon(widget::icon::from_name("send-to-symbolic"))
                 .class(cosmic::style::Button::Standard)
-                .on_press(Message::Open(original_url)),
+                .on_press(Message::Open(original_url.clone())),
             widget::button::icon(widget::icon::from_name("window-close-symbolic"))
                 .class(cosmic::style::Button::Standard)
                 .on_press(Message::Dialog(DialogAction::Close)),
@@ -2628,9 +2660,25 @@ impl AppModel {
             .height(bar_height)
             .align_y(Vertical::Center);
 
-        let footer = widget::container(widget::text(""))
-            .width(Length::Fill)
-            .height(bar_height);
+        let footer = widget::container(
+            widget::row![
+                widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
+                    .class(cosmic::style::Button::Standard)
+                    .on_press_maybe((index > 0).then_some(Message::NavigateImage(false))),
+                widget::text(format!("{} / {}", index + 1, images.len())),
+                widget::button::icon(widget::icon::from_name("go-next-symbolic"))
+                    .class(cosmic::style::Button::Standard)
+                    .on_press_maybe(
+                        (index + 1 < images.len()).then_some(Message::NavigateImage(true))
+                    ),
+            ]
+            .spacing(spacing.space_s)
+            .align_y(cosmic::iced::Alignment::Center),
+        )
+        .align_x(cosmic::iced::alignment::Horizontal::Center)
+        .align_y(Vertical::Center)
+        .width(Length::Fill)
+        .height(bar_height);
 
         widget::column![
             header,
