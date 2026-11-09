@@ -94,8 +94,11 @@ impl Notifications {
     /// Load the last-saved notification snapshot from disk (if any) so the
     /// view has something to render immediately, before the network fetch lands.
     pub fn load_cached(&mut self) -> Task<app::Message> {
+        if self.mastodon.is_authenticated() && self.mastodon.account_id.is_empty() {
+            return Task::none();
+        }
         let cached: Vec<Notification> =
-            crate::persistence::load_snapshot(&self.mastodon.base_url, "notifications");
+            crate::persistence::load_snapshot(&self.mastodon.cache_key(), "notifications");
         let mut tasks = vec![];
         for notification in cached {
             if !self.notifications.contains(&notification.id) {
@@ -113,12 +116,15 @@ impl Notifications {
 
     /// Persist the currently-cached notifications to disk.
     pub fn save_cached(&self, cache: &Cache) {
+        if self.mastodon.is_authenticated() && self.mastodon.account_id.is_empty() {
+            return;
+        }
         let notifications: Vec<Notification> = self
             .notifications
             .iter()
             .filter_map(|id| cache.notifications.get(id).cloned())
             .collect();
-        crate::persistence::save_notification_snapshot(&self.mastodon.base_url, &notifications);
+        crate::persistence::save_notification_snapshot(&self.mastodon.cache_key(), &notifications);
     }
 
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {

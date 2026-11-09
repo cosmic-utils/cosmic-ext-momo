@@ -72,7 +72,10 @@ pub fn view<'a>(
             widget::settings::section().title("Accounts"),
             |section, (index, session)| {
                 let mut row: Vec<Element<'a, Message>> = vec![
-                    Element::from(widget::text(session.base_url.clone())),
+                    Element::from(widget::text(format!(
+                        "{} · {}",
+                        session.acct, session.base_url
+                    ))),
                     Element::from(widget::space::horizontal()),
                 ];
                 if index != active {

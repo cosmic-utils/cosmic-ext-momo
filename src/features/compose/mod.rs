@@ -114,17 +114,18 @@ pub fn view<'a>(
                         .spacing(spacing.space_xs)
                         .align_y(cosmic::iced::Alignment::Center),
                         state.content_warning.then(|| {
-                            widget::text_input(fl!("content-warning-placeholder"), &state.spoiler_text)
-                                .on_input({
-                                    let state = state.clone();
-                                    move |value| {
-                                        let mut state = state.clone();
-                                        state.spoiler_text = value;
-                                        Message::Dialog(DialogAction::Update(Dialog::Compose(
-                                            state,
-                                        )))
-                                    }
-                                })
+                            widget::text_input(
+                                fl!("content-warning-placeholder"),
+                                &state.spoiler_text,
+                            )
+                            .on_input({
+                                let state = state.clone();
+                                move |value| {
+                                    let mut state = state.clone();
+                                    state.spoiler_text = value;
+                                    Message::Dialog(DialogAction::Update(Dialog::Compose(state)))
+                                }
+                            })
                         }),
                         widget::text_editor(editor)
                             .placeholder(fl!("whats-happening"))

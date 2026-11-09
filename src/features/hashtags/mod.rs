@@ -83,8 +83,8 @@ impl Hashtags {
             .into();
         }
 
-        let filter_input = widget::text_input("Filter hashtags", &self.filter)
-            .on_input(Message::FilterChanged);
+        let filter_input =
+            widget::text_input("Filter hashtags", &self.filter).on_input(Message::FilterChanged);
 
         let filter = self.filter.to_lowercase();
         let section = self
@@ -109,7 +109,9 @@ impl Hashtags {
 
         widget::column![
             filter_input,
-            widget::scrollable(section).width(Length::Fill).height(Length::Fill),
+            widget::scrollable(section)
+                .width(Length::Fill)
+                .height(Length::Fill),
         ]
         .spacing(spacing.space_xs)
         .apply(widget::container)
@@ -117,7 +119,7 @@ impl Hashtags {
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Start)
-            .into()
+        .into()
     }
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
@@ -157,7 +159,9 @@ impl Hashtags {
                             name,
                             response.json.following.unwrap_or(!following),
                         )),
-                        Err(err) => app::Message::Error(format!("Couldn't update hashtag follow: {err}")),
+                        Err(err) => {
+                            app::Message::Error(format!("Couldn't update hashtag follow: {err}"))
+                        }
                     }
                 });
             }

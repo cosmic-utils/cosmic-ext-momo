@@ -23,11 +23,11 @@ fn cache_root() -> Option<PathBuf> {
 
 /// Sanitize an account's base URL into a filesystem-safe directory name.
 fn account_slug(base_url: &str) -> String {
+    // Encode every byte: punctuation replacement can collide across identities.
     base_url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
@@ -70,10 +70,7 @@ pub fn save_status_snapshot(base_url: &str, slug: &str, items: &[megalodon::enti
     prune_scoped_snapshots(base_url);
 }
 
-pub fn save_notification_snapshot(
-    base_url: &str,
-    items: &[megalodon::entities::Notification],
-) {
+pub fn save_notification_snapshot(base_url: &str, items: &[megalodon::entities::Notification]) {
     save_snapshot(base_url, "notifications", items, MAX_NOTIFICATIONS);
 }
 

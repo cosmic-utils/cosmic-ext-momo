@@ -113,6 +113,7 @@ impl Page {
 }
 
 pub struct AppModel {
+    generation: u64,
     core: Core,
     about: About,
     nav: nav_bar::Model,
@@ -155,6 +156,8 @@ pub struct AppModel {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Scoped(u64, Box<Message>),
+    VerifiedLogin(Client, Account),
     Open(String),
     ToggleContextPage(ContextPage),
     ToggleContextDrawer,
@@ -259,8 +262,16 @@ impl Application for AppModel {
             }
         };
 
+        let mut flags = flags;
+        if let Some(preferences) = sessions
+            .active_session()
+            .and_then(|session| session.preferences.clone())
+        {
+            flags.config = preferences;
+        }
+
         let mastodon = match sessions.active_session() {
-            Some(session) => Client::new(session.base_url.clone(), Some(session.token.clone())),
+            Some(session) => Client::from_session(session),
             None => Client::new(instance.clone(), None),
         };
 
@@ -294,6 +305,7 @@ impl Application for AppModel {
             .links([(fl!("repository"), REPOSITORY), (fl!("support"), SUPPORT)]);
 
         let mut app = AppModel {
+            generation: 0,
             core,
             about,
             nav,
@@ -347,7 +359,7 @@ impl Application for AppModel {
             tasks.push(fetch_session_info(mastodon));
         }
 
-        (app, Task::batch(tasks))
+        (app, scoped_task(Task::batch(tasks), 0))
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
@@ -555,6 +567,10 @@ impl Application for AppModel {
     /// persist anything.
     fn on_app_exit(&mut self) -> Option<Self::Message> {
         self.flush_cache_to_disk();
+        if let Some(session) = self.sessions.sessions.get_mut(self.sessions.active) {
+            session.preferences = Some(self.config.clone());
+            let _ = self.persist_sessions();
+        }
         None
     }
 
@@ -631,12 +647,21 @@ impl Application for AppModel {
                 .map(|_| Message::FlushCache),
         );
 
+        let generation = self.generation;
         Subscription::batch(subscriptions)
+            .with(generation)
+            .map(|(generation, message)| Message::Scoped(generation, Box::new(message)))
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         let mut tasks = vec![];
         match message {
+            Message::Scoped(generation, message) => {
+                if generation != self.generation {
+                    return Task::none();
+                }
+                return self.update(*message);
+            }
             Message::Home(message) => {
                 tasks.push(self.home.update(message));
             }
@@ -669,6 +694,7 @@ impl Application for AppModel {
             }
             Message::Settings(message) => match message {
                 settings::Message::ToggleHideBoosts(hide) => {
+                    self.config.hide_boosts = hide;
                     self.cache.hide_boosts = hide;
                     if let Some(ref handler) = self.handler {
                         if let Err(err) = self.config.set_hide_boosts(handler, hide) {
@@ -677,6 +703,7 @@ impl Application for AppModel {
                     }
                 }
                 settings::Message::ToggleHideReplies(hide) => {
+                    self.config.hide_replies = hide;
                     self.cache.hide_replies = hide;
                     if let Some(ref handler) = self.handler {
                         if let Err(err) = self.config.set_hide_replies(handler, hide) {
@@ -685,6 +712,7 @@ impl Application for AppModel {
                     }
                 }
                 settings::Message::SetFeedDensity(density) => {
+                    self.config.feed_density = density;
                     self.cache.feed_density = density;
                     if let Some(ref handler) = self.handler {
                         if let Err(err) = self.config.set_feed_density(handler, density) {
@@ -693,6 +721,7 @@ impl Application for AppModel {
                     }
                 }
                 settings::Message::SetThemeMode(mode) => {
+                    self.config.theme_mode = mode;
                     if let Some(ref handler) = self.handler {
                         if let Err(err) = self.config.set_theme_mode(handler, mode) {
                             tracing::error!("{err}");
@@ -897,28 +926,49 @@ impl Application for AppModel {
                 }
             }
             Message::StoreMastodonData(mastodon) => {
-                let session = Session {
+                tasks.push(cosmic::task::future(async move {
+                    match mastodon.verify_account_credentials().await {
+                        Ok(response) => Message::VerifiedLogin(mastodon, response.json),
+                        Err(err) => Message::Error(format!("Couldn't verify account: {err}")),
+                    }
+                }));
+            }
+            Message::VerifiedLogin(mut mastodon, account) => {
+                mastodon.account_id = account.id.clone();
+                let previous = self.sessions.clone();
+                self.sessions.upsert_active(Session {
                     base_url: mastodon.base_url.clone(),
                     token: mastodon.token.clone().unwrap_or_default(),
-                };
-                self.sessions.upsert_active(session);
+                    account_id: account.id.clone(),
+                    acct: account.acct.clone(),
+                    preferences: None,
+                });
                 match self.persist_sessions() {
-                    Ok(_) => {
-                        self.mastodon = mastodon;
-                        self.update_navbar();
-                        tasks.push(self.on_nav_select(self.nav.active()));
-                        tasks.push(self.update_all_clients());
-                        tasks.push(fetch_session_info(self.mastodon.clone()));
+                    Ok(()) => {
+                        tasks.push(self.switch_account(self.sessions.active));
                     }
-                    Err(err) => tasks.push(cosmic::task::message(Message::Error(format!(
-                        "Couldn't save session: {err}"
-                    )))),
+                    Err(err) => {
+                        self.sessions = previous;
+                        tasks.push(cosmic::task::message(Message::Error(format!(
+                            "Couldn't save account: {err}"
+                        ))));
+                    }
                 }
             }
             Message::UpdateMastodonInstance => {
                 self.mastodon = Client::new(self.instance(), None);
             }
             Message::SetAccount(account) => {
+                // Migrate legacy sessions after credentials have been verified.
+                if let Some(session) = self.sessions.sessions.get_mut(self.sessions.active) {
+                    if session.account_id.is_empty() {
+                        session.account_id = account.id.clone();
+                        session.acct = account.acct.clone();
+                        self.mastodon.account_id = account.id.clone();
+                        let _ = self.persist_sessions();
+                        tasks.push(self.reset_and_reload_feeds());
+                    }
+                }
                 self.cache.me = Some(account);
             }
             Message::SetMaxCharacters(max_characters) => {
@@ -1062,7 +1112,7 @@ impl Application for AppModel {
             Message::FlushCache => self.flush_cache_to_disk(),
             Message::None => (),
         }
-        Task::batch(tasks)
+        scoped_task(Task::batch(tasks), self.generation)
     }
 }
 
@@ -1073,38 +1123,22 @@ impl AppModel {
         keytar::set_password(Self::APP_ID, "mastodon-data", &data).map_err(|err| err.to_string())
     }
 
-    /// Push the active client to every feature that holds its own copy, so
-    /// switching accounts doesn't leave a page talking to the old session.
-    fn update_all_clients(&mut self) -> Task<Message> {
-        let mastodon = self.mastodon.clone();
-        Task::batch(vec![
-            self.home
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.notifications
-                .update(notifications::Message::SetClient(mastodon.clone())),
-            self.explore
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.local
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.federated
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.favorites
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.bookmarks
-                .update(timeline::Message::SetClient(mastodon.clone())),
-            self.hashtags
-                .update(hashtags::Message::SetClient(mastodon.clone())),
-            self.lists
-                .update(lists::Message::SetClient(mastodon.clone())),
-            self.search.update(search::Message::SetClient(mastodon)),
-        ])
-    }
-
     /// Drop every feed's in-memory content and reload each from the newly
     /// active account's own disk cache, so switching accounts doesn't leave
     /// the previous account's posts visible until a fresh fetch lands.
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
+        self.generation += 1;
+        self.dialog_pages.clear();
+        self.dialog_editor = widget::text_editor::Content::default();
+        self.core.window.show_context = false;
+        self.context_page = ContextPage::default();
+        self.image_queue.clear();
+        self.image_inflight.clear();
+        self.max_characters = 500;
         let mastodon = self.mastodon.clone();
+        self.hashtags = hashtags::Hashtags::new(mastodon.clone());
+        self.lists = lists::Lists::new(mastodon.clone());
+        self.search = search::Search::new(mastodon.clone());
         self.home.reset(mastodon.clone());
         self.explore.reset(mastodon.clone());
         self.local.reset(mastodon.clone());
@@ -1177,8 +1211,15 @@ impl AppModel {
             return Task::none();
         };
         self.flush_cache_to_disk();
+        if let Some(current) = self.sessions.sessions.get_mut(self.sessions.active) {
+            current.preferences = Some(self.config.clone());
+        }
         self.sessions.active = index;
-        self.mastodon = Client::new(session.base_url, Some(session.token));
+        self.config = session.preferences.clone().unwrap_or_else(|| TootConfig {
+            server: self.config.server.clone(),
+            ..Default::default()
+        });
+        self.mastodon = Client::from_session(&session);
         self.cache.clear();
         self.cache.hide_boosts = self.config.hide_boosts;
         self.cache.hide_replies = self.config.hide_replies;
@@ -1206,7 +1247,7 @@ impl AppModel {
             .sessions
             .sessions
             .get(index)
-            .map(|s| s.base_url.clone());
+            .map(|s| Client::from_session(s).cache_key());
         if was_active {
             self.flush_cache_to_disk();
         }
@@ -1225,7 +1266,7 @@ impl AppModel {
         if was_active {
             match self.sessions.active_session().cloned() {
                 Some(session) => {
-                    self.mastodon = Client::new(session.base_url, Some(session.token));
+                    self.mastodon = Client::from_session(&session);
                 }
                 None => {
                     self.mastodon = Client::new(self.instance(), None);
@@ -1400,12 +1441,16 @@ impl AppModel {
             .width(Length::Fill)
             .height(bar_height);
 
-        widget::column![header, widget::container(image).center(Length::Fill), footer]
-            .apply(widget::container)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .class(cosmic::style::Container::Dialog(false))
-            .into()
+        widget::column![
+            header,
+            widget::container(image).center(Length::Fill),
+            footer
+        ]
+        .apply(widget::container)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .class(cosmic::style::Container::Dialog(false))
+        .into()
     }
 
     fn status(&self, id: &String) -> Element<'_, Message> {
@@ -1527,4 +1572,13 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
         }
     }
+}
+
+fn scoped_task(task: Task<Message>, generation: u64) -> Task<Message> {
+    task.map(move |action| match action {
+        cosmic::Action::App(message) => {
+            cosmic::Action::App(Message::Scoped(generation, Box::new(message)))
+        }
+        other => other,
+    })
 }

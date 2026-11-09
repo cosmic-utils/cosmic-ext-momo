@@ -71,9 +71,19 @@ pub enum Message {
 impl Search {
     pub fn new(mastodon: Client) -> Self {
         let mut result_tabs = segmented_button::SingleSelectModel::default();
-        result_tabs.insert().text("Users").data(ResultKind::Accounts).activate();
-        result_tabs.insert().text("Hashtags").data(ResultKind::Hashtags);
-        result_tabs.insert().text("Posts").data(ResultKind::Statuses);
+        result_tabs
+            .insert()
+            .text("Users")
+            .data(ResultKind::Accounts)
+            .activate();
+        result_tabs
+            .insert()
+            .text("Hashtags")
+            .data(ResultKind::Hashtags);
+        result_tabs
+            .insert()
+            .text("Posts")
+            .data(ResultKind::Statuses);
 
         Self {
             mastodon,
@@ -117,17 +127,18 @@ impl Search {
         }
 
         let has_query_or_results = !self.query.is_empty() || self.results.is_some();
-        let input = widget::row![
-            widget::text_input("Search accounts, hashtags, statuses", &self.query)
-                .on_input(Message::QueryChanged)
-                .on_submit(|_| Message::Submit),
-        ]
-        .push_maybe(has_query_or_results.then(|| -> Element<'_, Message> {
-            widget::button::standard("Clear")
-                .on_press(Message::Clear)
-                .into()
-        }))
-        .spacing(spacing.space_xs);
+        let input =
+            widget::row![
+                widget::text_input("Search accounts, hashtags, statuses", &self.query)
+                    .on_input(Message::QueryChanged)
+                    .on_submit(|_| Message::Submit),
+            ]
+            .push_maybe(has_query_or_results.then(|| -> Element<'_, Message> {
+                widget::button::standard("Clear")
+                    .on_press(Message::Clear)
+                    .into()
+            }))
+            .spacing(spacing.space_xs);
 
         let searching: Option<Element<_>> = self.searching.then(|| {
             widget::container(widget::indeterminate_circular().size(24.0))
@@ -172,7 +183,9 @@ impl Search {
                     results
                         .statuses
                         .iter()
-                        .map(|status| status::status(status, StatusOptions::all(), cache).map(Message::Status))
+                        .map(|status| {
+                            status::status(status, StatusOptions::all(), cache).map(Message::Status)
+                        })
                         .collect::<Vec<_>>(),
                 )
                 .spacing(spacing.space_xs)
@@ -212,11 +225,16 @@ impl Search {
                     self.searching = true;
                     let mastodon = self.mastodon.clone();
                     return cosmic::task::future(async move {
-                        match mastodon.search(query, Some(&SearchInputOptions::default())).await {
+                        match mastodon
+                            .search(query, Some(&SearchInputOptions::default()))
+                            .await
+                        {
                             Ok(response) => {
                                 app::Message::Search(Message::SetResults(response.json))
                             }
-                            Err(err) => app::Message::Search(Message::SearchFailed(err.to_string())),
+                            Err(err) => {
+                                app::Message::Search(Message::SearchFailed(err.to_string()))
+                            }
                         }
                     });
                 }
@@ -228,8 +246,11 @@ impl Search {
             }
             Message::SetResults(results) => {
                 self.searching = false;
-                let account_ids: Vec<String> =
-                    results.accounts.iter().map(|account| account.id.clone()).collect();
+                let account_ids: Vec<String> = results
+                    .accounts
+                    .iter()
+                    .map(|account| account.id.clone())
+                    .collect();
 
                 let mut image_urls: Vec<String> = results
                     .accounts

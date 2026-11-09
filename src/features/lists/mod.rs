@@ -61,10 +61,9 @@ impl Lists {
             .map(|timeline| timeline.view(cache).map(Message::Timeline));
 
         widget::column![
-            widget::scrollable(widget::row(lists).spacing(spacing.space_xs))
-                .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
-                    Default::default()
-                )),
+            widget::scrollable(widget::row(lists).spacing(spacing.space_xs)).direction(
+                cosmic::iced::widget::scrollable::Direction::Horizontal(Default::default())
+            ),
             content,
         ]
         .spacing(spacing.space_xs)
