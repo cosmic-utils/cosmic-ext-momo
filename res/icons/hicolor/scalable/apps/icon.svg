@@ -1,2 +1,42 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Toot</title>
+  <desc>A purple mastodon head with ivory tusks and a curled trunk.</desc>
+  <defs>
+    <linearGradient id="head" x1="43" y1="17" x2="88" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#858AFA"/>
+      <stop offset="0.55" stop-color="#6364FF"/>
+      <stop offset="1" stop-color="#563ACC"/>
+    </linearGradient>
+    <linearGradient id="ears" x1="64" y1="32" x2="64" y2="89" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6364FF"/>
+      <stop offset="1" stop-color="#563ACC"/>
+    </linearGradient>
+    <linearGradient id="ivory" x1="64" y1="70" x2="64" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.5" stop-color="#FFF9ED"/>
+      <stop offset="1" stop-color="#E4D5BF"/>
+    </linearGradient>
+  </defs>
+  <!-- Broad ears frame the head without an enclosing app tile. -->
+  <path d="M38 32H25C16 32 10 39 10 48V67C10 81 18 89 31 89C42 89 50 77 50 64V40L38 32Z" fill="url(#ears)"/>
+  <path d="M90 32H103C112 32 118 39 118 48V67C118 81 110 89 97 89C86 89 78 77 78 64V40L90 32Z" fill="url(#ears)"/>
+  <path d="M64 14C44 14 32 26 32 44V62C32 77 40 86 54 89V96C54 108 62 115 74 115C89 115 98 105 98 92H84C84 99 80 103 74 103C70 103 68 100 68 96V89C85 87 96 78 96 62V44C96 26 84 14 64 14Z" fill="#4525A5" transform="translate(0 3)"/>
+  <path d="M64 14C44 14 32 26 32 44V62C32 77 40 86 54 89V96C54 108 62 115 74 115C89 115 98 105 98 92H84C84 99 80 103 74 103C70 103 68 100 68 96V89C85 87 96 78 96 62V44C96 26 84 14 64 14Z" fill="url(#head)"/>
+  <g fill="#B8A58F" transform="translate(0 2)">
+    <path d="M49 75C48 87 40 96 29 95C20 94 15 87 16 77C20 85 25 88 31 86C36 84 38 79 39 72C40 68 49 70 49 75Z"/>
+    <path d="M79 75C80 87 88 96 99 95C108 94 113 87 112 77C108 85 103 88 97 86C92 84 90 79 89 72C88 68 79 70 79 75Z"/>
+  </g>
+  <g fill="url(#ivory)">
+    <path d="M49 75C48 87 40 96 29 95C20 94 15 87 16 77C20 85 25 88 31 86C36 84 38 79 39 72C40 68 49 70 49 75Z"/>
+    <path d="M79 75C80 87 88 96 99 95C108 94 113 87 112 77C108 85 103 88 97 86C92 84 90 79 89 72C88 68 79 70 79 75Z"/>
+  </g>
+  <g fill="#17063B">
+    <ellipse cx="48" cy="55" rx="4.5" ry="5.5"/>
+    <ellipse cx="80" cy="55" rx="4.5" ry="5.5"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="46.5" cy="53" r="1.6"/>
+    <circle cx="78.5" cy="53" r="1.6"/>
+  </g>
+</svg>

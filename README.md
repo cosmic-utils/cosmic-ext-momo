@@ -1,27 +1,29 @@
-# Toot
-Toot is a Mastodon client for COSMIC.
+<p align="center">
+  <img src="res/icons/hicolor/scalable/apps/icon.svg" alt="Toot’s purple mastodon icon" width="128" height="128">
+</p>
 
-## Dependencies
-- libsecret-1-dev
+<h1 align="center">Toot</h1>
+<p align="center"><strong>Your corner of the fediverse.</strong></p>
+<p align="center">A Mastodon client made for the COSMIC desktop.</p>
 
-- libgstreamer1.0-dev
-- libgstreamer-plugins-base1.0-dev
+Catch up with your community, discover new voices, and join the conversation—all from an app that feels at home on your desktop.
 
-Video playback uses GStreamer. Install the playback, network, and codec plugins
-for the formats served by your instance. On Ubuntu/Pop!_OS:
+## Make yourself at home
 
-```sh
-sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad gstreamer1.0-libav
-```
+- **Follow the conversation.** Read your home, local, and federated timelines, open threads, and explore profiles.
+- **Share your thoughts.** Write posts, reply, add images with descriptions, and edit what you’ve shared.
+- **Keep the good stuff.** Boost posts, leave favorites, and bookmark things to revisit.
+- **Enjoy the details.** View photos, watch videos, and read at your own pace with content warnings and sensitive media controls.
+- **Bring your accounts.** Add multiple Mastodon accounts and switch between them, or browse as a guest before signing in.
 
-Open a post's video thumbnail to play it in the attachment viewer. Use the
-play/pause button (or Space), seek bar, and mute button to control playback.
-Left/Right move between attachments and Escape closes the viewer. Animated
-video attachments loop and start muted. Playback stops when you leave the video.
-If playback fails, the open-in-browser button still opens the original media.
+## Get started
 
-To edit your own post, select its pencil button or **More → Edit post**. The
-composer loads the original text and existing attachments. Select **Save changes**
-to update the post; its audience and existing poll are preserved.
+Open Toot and enter your Mastodon server’s address. The welcome guide will walk you through signing in through your browser and connecting your account. You can add another account later in Settings.
+
+Toot is under active development. Features and installation options are still taking shape.
+
+## Help shape Toot
+
+Found a bug or have an idea? [Open an issue](https://github.com/cosmic-utils/cosmic-ext-toot/issues) and tell us about it.
+
+Toot is free and open source, licensed under the [GNU GPL v3](LICENSE).
