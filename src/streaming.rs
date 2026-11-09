@@ -19,39 +19,22 @@ pub fn stream_user_events(mastodon: Client) -> Subscription<app::Message> {
                     .listen(Box::new(move |message| {
                         let mut output = output.clone();
                         Box::pin(async move {
-                            match message {
+                            let message = match message {
                                 StreamMessage::Update(status) => {
-                                    if let Err(err) = output
-                                        .send(app::Message::Home(
-                                            timeline::Message::IncomingStatus(status),
-                                        ))
-                                        .await
-                                    {
-                                        tracing::warn!("failed to send post: {}", err);
-                                    }
+                                    app::Message::Home(timeline::Message::IncomingStatus(status))
                                 }
                                 StreamMessage::Notification(notification) => {
-                                    if let Err(err) = output
-                                        .send(app::Message::Notifications(
-                                            notifications::Message::PrependNotification(
-                                                notification,
-                                            ),
-                                        ))
-                                        .await
-                                    {
-                                        tracing::warn!("failed to send post: {}", err);
-                                    }
+                                    app::Message::Notifications(
+                                        notifications::Message::PrependNotification(notification),
+                                    )
                                 }
-                                StreamMessage::Delete(id) => {
-                                    if let Err(err) =
-                                        output.send(app::Message::StatusDeleted(id)).await
-                                    {
-                                        tracing::warn!("failed to send post: {}", err);
-                                    }
-                                }
+                                StreamMessage::Delete(id) => app::Message::StatusDeleted(id),
                                 StreamMessage::Conversation(_)
                                 | StreamMessage::StatusUpdate(_)
-                                | StreamMessage::Heartbeat() => (),
+                                | StreamMessage::Heartbeat() => return,
+                            };
+                            if let Err(err) = output.send(message).await {
+                                tracing::warn!("failed to forward stream event: {err}");
                             }
                         })
                     }))

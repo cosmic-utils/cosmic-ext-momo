@@ -124,8 +124,6 @@ reading-report-sent = Your report was sent to your server’s moderators.
 reading-no-visible-posts = No posts to show with your current filters
 
 ## Reliable posting and drafts
-compose-in-reply-to = Replying to post
-compose-visibility = Visibility
 compose-public = Public
 compose-unlisted = Unlisted
 compose-followers = Followers only
@@ -134,10 +132,6 @@ compose-local = Local
 compose-language = Post language code (optional, e.g. en)
 compose-sensitive = Mark media as sensitive
 compose-alt = Image description (alt text)
-compose-processing = Processing image…
-compose-uploading = Uploading
-compose-uploaded = Image ready
-compose-upload = Upload image
 compose-remove = Remove
 compose-add-images = Add images
 compose-images = Images
@@ -175,7 +169,6 @@ compose-account-loading = Wait for your account details to finish loading before
 compose-reply-error = Could not find the post to reply to. Open its conversation and retry.
 compose-too-many-images = The selected images exceed your server’s attachment limit.
 compose-preparing-images = Preparing images…
-compose-reupload = Upload again
 compose-mixed-media = Animated images or videos must be attached on their own. Remove the other attachments to continue.
 
 ## Activity inbox
@@ -266,12 +259,10 @@ feed-app-menu = Application menu
 compose-posting-as = Posting as
 compose-replying = Replying to
 compose-audience = Audience
-compose-options = Post settings
 compose-language-placeholder = e.g. en, es, pt-BR
 compose-language-help = Use a language code, or leave blank to use your server’s default.
 compose-remaining = characters left
 compose-over-limit = characters over the limit
-compose-upload-failed = Upload failed
 compose-done = Done
 compose-language-tab = Language
 compose-no-drafts-hint = Posts you start but don't publish are saved here.

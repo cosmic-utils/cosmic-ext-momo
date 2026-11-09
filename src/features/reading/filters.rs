@@ -171,10 +171,13 @@ pub async fn fetch(client: crate::client::Client) -> Result<Vec<Filter>, String>
     if !client.is_authenticated() {
         return Ok(vec![]);
     }
+    fn error<E>(_: E) -> String {
+        crate::fl!("reading-filters-error")
+    }
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|_| crate::fl!("reading-filters-error"))?;
+        .map_err(error)?;
     let response = http
         .get(format!(
             "{}/api/v2/filters",
@@ -183,13 +186,13 @@ pub async fn fetch(client: crate::client::Client) -> Result<Vec<Filter>, String>
         .bearer_auth(client.token.as_deref().unwrap_or_default())
         .send()
         .await
-        .map_err(|_| crate::fl!("reading-filters-error"))?;
+        .map_err(error)?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        let legacy = tokio::time::timeout(std::time::Duration::from_secs(30), client.get_filters())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .ok_or_else(|| crate::fl!("reading-filters-error"))?;
+        let legacy = crate::client::within_timeout(
+            client.get_filters(),
+            crate::fl!("reading-filters-error"),
+        )
+        .await?;
         return Ok(legacy
             .json
             .into_iter()
@@ -222,9 +225,9 @@ pub async fn fetch(client: crate::client::Client) -> Result<Vec<Filter>, String>
     }
     let bytes = response
         .error_for_status()
-        .map_err(|_| crate::fl!("reading-filters-error"))?
+        .map_err(error)?
         .bytes()
         .await
-        .map_err(|_| crate::fl!("reading-filters-error"))?;
-    serde_json::from_slice(&bytes).map_err(|_| crate::fl!("reading-filters-error"))
+        .map_err(error)?;
+    serde_json::from_slice(&bytes).map_err(error)
 }

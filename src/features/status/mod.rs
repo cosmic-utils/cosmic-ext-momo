@@ -90,7 +90,7 @@ pub fn status<'a>(
     let status = status
         .reblog
         .as_ref()
-        .map(|reblog| cache.statuses.get(&reblog.id.to_string()).unwrap_or(reblog))
+        .map(|reblog| cache.statuses.get(&reblog.id).unwrap_or(reblog))
         .unwrap_or(status);
 
     let density = cache.feed_density;
@@ -264,7 +264,10 @@ pub fn update(message: Message) -> Task<app::Message> {
         | Message::PollChoice(_, _)
         | Message::Vote(_, _)
         | Message::RefreshPoll(_)
-        | Message::Report(_, _) => cosmic::task::message(app::Message::Status(message)),
+        | Message::Report(_, _)
+        | Message::Favorite(_, _)
+        | Message::Boost(_, _)
+        | Message::Bookmark(_, _) => cosmic::task::message(app::Message::Status(message)),
         Message::OpenAccount(account) => cosmic::task::message(app::Message::ToggleContextPage(
             app::ContextPage::Account(account),
         )),
@@ -277,21 +280,10 @@ pub fn update(message: Message) -> Task<app::Message> {
         Message::Edit(id) => {
             cosmic::task::message(app::Message::Compose(compose::Message::Edit(id)))
         }
-        Message::Favorite(status_id, favorited) => cosmic::task::message(app::Message::Status(
-            Message::Favorite(status_id, favorited),
+        Message::OpenLink(url) => cosmic::task::message(app::Message::Open(url)),
+        Message::ViewImage(images, index) => cosmic::task::message(app::Message::Dialog(
+            app::DialogAction::Open(app::Dialog::Image(images, index)),
         )),
-        Message::Boost(status_id, boosted) => {
-            cosmic::task::message(app::Message::Status(Message::Boost(status_id, boosted)))
-        }
-        Message::Bookmark(status_id, bookmarked) => cosmic::task::message(app::Message::Status(
-            Message::Bookmark(status_id, bookmarked),
-        )),
-        Message::OpenLink(url) => cosmic::task::message(app::Message::Open(url.to_string())),
-        Message::ViewImage(images, index) => {
-            cosmic::task::message(app::Message::Dialog(app::DialogAction::Open(
-                app::Dialog::Image(images, index),
-            )))
-        }
         Message::Delete(status_id) => cosmic::task::message(app::Message::Dialog(
             app::DialogAction::Open(app::Dialog::DeleteStatus(status_id)),
         )),
@@ -533,11 +525,10 @@ fn media<'a>(
         })
         .collect::<Vec<Element<Message>>>();
 
-    let media = (!status.media_attachments.is_empty() && options.media).then_some({
+    (!status.media_attachments.is_empty() && options.media).then(|| {
         widget::scrollable(widget::row(attachments).spacing(spacing.space_xxs))
             .direction(Direction::Horizontal(Scrollbar::new()))
-    });
-    media
+    })
 }
 
 fn tags(status: &Status, options: StatusOptions) -> Option<Element<'_, Message>> {
@@ -559,18 +550,17 @@ fn tags(status: &Status, options: StatusOptions) -> Option<Element<'_, Message>>
         .iter()
         .filter(|tag| !hidden(&tag.name))
         .collect();
-    let tags: Option<Element<_>> = (!extra.is_empty() && options.tags).then(|| {
+    (!extra.is_empty() && options.tags).then(|| {
         let tags = extra
             .into_iter()
             .map(|tag| {
-                widget::button::link(format!("#{}", tag.name.clone()))
+                widget::button::link(format!("#{}", tag.name))
                     .on_press(Message::OpenLink(tag.url.clone()))
                     .into()
             })
             .collect::<Vec<Element<Message>>>();
         widget::flex_row(tags).spacing(spacing.space_xxs).into()
-    });
-    tags
+    })
 }
 
 fn header<'a>(

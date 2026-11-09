@@ -10,6 +10,8 @@ use crate::client::Client;
 
 use super::{Message, TimelineKind};
 
+const PAGE_SIZE: u32 = 20;
+
 pub fn timeline(
     mastodon: Client,
     kind: TimelineKind,
@@ -31,7 +33,7 @@ pub fn timeline(
                             TimelineKind::Home => {
                                 let options = GetHomeTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon.get_home_timeline(Some(&options)).await.map(page)
@@ -39,7 +41,7 @@ pub fn timeline(
                             TimelineKind::Local => {
                                 let options = GetLocalTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon.get_local_timeline(Some(&options)).await.map(page)
@@ -47,7 +49,7 @@ pub fn timeline(
                             TimelineKind::Public => {
                                 let options = GetPublicTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon.get_public_timeline(Some(&options)).await.map(page)
@@ -58,7 +60,7 @@ pub fn timeline(
                                 // account `acct` only carries an `@instance` suffix for remote accounts.
                                 let options = GetPublicTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon
@@ -74,7 +76,7 @@ pub fn timeline(
                             TimelineKind::Favorites => {
                                 let options = GetFavouritesInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon.get_favourites(Some(&options)).await.map(page)
@@ -82,7 +84,7 @@ pub fn timeline(
                             TimelineKind::Bookmarks => {
                                 let options = GetBookmarksInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon.get_bookmarks(Some(&options)).await.map(page)
@@ -90,7 +92,7 @@ pub fn timeline(
                             TimelineKind::Tag(tag) => {
                                 let options = GetTagTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon
@@ -101,7 +103,7 @@ pub fn timeline(
                             TimelineKind::List(id) => {
                                 let options = GetListTimelineInputOptions {
                                     max_id,
-                                    limit: Some(20),
+                                    limit: Some(PAGE_SIZE),
                                     ..Default::default()
                                 };
                                 mastodon
@@ -137,8 +139,8 @@ fn page(response: megalodon::response::Response<Vec<megalodon::entities::Status>
         .get("link")
         .and_then(|value| value.to_str().ok())
         .and_then(crate::client::next_cursor);
-    let more =
-        next.is_some() || (response.header.get("link").is_none() && response.json.len() >= 20);
+    let more = next.is_some()
+        || (response.header.get("link").is_none() && response.json.len() >= PAGE_SIZE as usize);
     let cursor = next.or_else(|| response.json.last().map(|post| post.id.clone()));
     Page {
         statuses: response.json,

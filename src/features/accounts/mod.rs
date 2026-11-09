@@ -91,8 +91,8 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
     )
     .class(cosmic::style::Container::Card);
 
-    let relationship_actions =
-        (cache.me.is_some() && !is_me).then(|| relationship_actions(account, relationship));
+    let can_act = cache.me.is_some() && !is_me;
+    let relationship_actions = can_act.then(|| relationship_actions(account, relationship));
 
     let settings = (!fields.is_empty()).then_some(widget::settings::section().extend(fields));
     let content = widget::column![
@@ -104,7 +104,7 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         joined,
         info,
         settings,
-        (cache.me.is_some() && !is_me).then(|| widget::button::standard(fl!("reading-report"))
+        can_act.then(|| widget::button::standard(fl!("reading-report"))
             .on_press(Message::Report(account.clone())))
     ]
     .align_x(Horizontal::Center)

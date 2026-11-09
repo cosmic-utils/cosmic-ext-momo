@@ -21,9 +21,9 @@ fn cache_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|dir| dir.join(AppModel::APP_ID))
 }
 
-/// Sanitize an account's base URL into a filesystem-safe directory name.
+/// Hex-encode an account key into a filesystem-safe directory name. Every byte
+/// is encoded because punctuation replacement can collide across identities.
 fn account_slug(base_url: &str) -> String {
-    // Encode every byte: punctuation replacement can collide across identities.
     base_url
         .as_bytes()
         .iter()

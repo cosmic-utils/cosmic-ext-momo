@@ -35,9 +35,12 @@ impl Thread {
         }
         let mut items = widget::column![].spacing(spacing.space_s);
         for (ids, label) in [
-            (&self.ancestors, fl!("reading-ancestors")),
-            (&vec![self.root.clone()], fl!("reading-selected-post")),
-            (&self.descendants, fl!("reading-replies")),
+            (self.ancestors.as_slice(), fl!("reading-ancestors")),
+            (
+                std::slice::from_ref(&self.root),
+                fl!("reading-selected-post"),
+            ),
+            (self.descendants.as_slice(), fl!("reading-replies")),
         ] {
             if ids.is_empty() {
                 continue;

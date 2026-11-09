@@ -164,30 +164,32 @@ impl Search {
         });
 
         let results_content: Option<Element<_>> = self.results.as_ref().map(|results| {
-            if matches!(
-                self.result_tabs.active_data::<ResultKind>(),
-                Some(ResultKind::Statuses) | None
-            ) {
+            let kind = self
+                .result_tabs
+                .active_data::<ResultKind>()
+                .copied()
+                .unwrap_or(ResultKind::Statuses);
+            if kind == ResultKind::Statuses {
                 if let Some(notice) = crate::features::reading::filter_notice(cache) {
                     return notice.map(Message::Status);
                 }
             }
-            match self.result_tabs.active_data::<ResultKind>() {
-                Some(ResultKind::Accounts) => results
+            match kind {
+                ResultKind::Accounts => results
                     .accounts
                     .iter()
                     .fold(widget::settings::section(), |section, account| {
                         section.add(account_row(account, cache))
                     })
                     .into(),
-                Some(ResultKind::Hashtags) => results
+                ResultKind::Hashtags => results
                     .hashtags
                     .iter()
                     .fold(widget::settings::section(), |section, tag| {
                         section.add(tag_row(tag, self.is_following_tag(tag)))
                     })
                     .into(),
-                Some(ResultKind::Statuses) | None => widget::column(
+                ResultKind::Statuses => widget::column(
                     results
                         .statuses
                         .iter()
@@ -281,15 +283,15 @@ impl Search {
                     image_urls.extend(cache::extract_status_images(status));
                 }
 
-                let cached_statuses = results.statuses.clone();
-                self.results = Some(results);
-
                 let mut tasks = vec![cosmic::task::message(app::Message::Fetch(image_urls))];
                 tasks.extend(
-                    cached_statuses
-                        .into_iter()
+                    results
+                        .statuses
+                        .iter()
+                        .cloned()
                         .map(|status| cosmic::task::message(app::Message::CacheStatus(status))),
                 );
+                self.results = Some(results);
 
                 if !account_ids.is_empty() && self.mastodon.is_authenticated() {
                     let mastodon = self.mastodon.clone();

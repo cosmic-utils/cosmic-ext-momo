@@ -62,7 +62,7 @@ fn replies_never_default_to_a_broader_audience_and_honor_account_preferences() {
             );
             assert_eq!(reply.spoiler_text, "Warning");
             assert!(reply.content_warning);
-            assert_eq!(reply.text.as_deref(), Some("@alice@example.org "));
+            assert_eq!(reply.text, "@alice@example.org ");
         }
     }
     let mut me = account("me", "public");
@@ -79,17 +79,12 @@ fn replies_deduplicate_recipients_and_exclude_the_authenticated_account() {
         {"id":"bob","username":"bob","acct":"bob@remote.example","url":"https://remote.example/@bob"}
     ])).unwrap();
     let reply = State::reply_to(&target, Some(&account("me", "public")));
-    assert_eq!(
-        reply.text.as_deref(),
-        Some("@alice@example.org @bob@remote.example ")
-    );
+    assert_eq!(reply.text, "@alice@example.org @bob@remote.example ");
     target.account = account("me", "public");
     target.mentions.clear();
     assert_eq!(
-        State::reply_to(&target, Some(&account("me", "public")))
-            .text
-            .as_deref(),
-        Some("")
+        State::reply_to(&target, Some(&account("me", "public"))).text,
+        ""
     );
 }
 
@@ -102,7 +97,7 @@ fn editing_uses_original_source_and_leaves_existing_polls_and_visibility_unchang
         spoiler_text: String::new(),
     };
     let mut state = State::edit(&original, source);
-    assert_eq!(state.text.as_deref(), Some("Original https://example.org"));
+    assert_eq!(state.text, "Original https://example.org");
     assert_eq!(state.edit_id.as_deref(), Some("s1"));
     let payload = state.payload();
     assert!(payload.get("visibility").is_none());
@@ -116,7 +111,7 @@ fn editing_uses_original_source_and_leaves_existing_polls_and_visibility_unchang
 #[test]
 fn uncertain_submissions_keep_the_original_key_and_freeze_edits_until_resolved() {
     let mut state = State::default();
-    state.text = Some("hello".into());
+    state.text = "hello".into();
     state.changed();
     let key = state.submission_key.clone();
     state.attempted_at = Some(chrono::Utc::now().timestamp());
@@ -133,7 +128,7 @@ fn uncertain_submissions_keep_the_original_key_and_freeze_edits_until_resolved()
     assert!(!state.retry_safe());
     state.failed(network::SubmitError::Rejected("rejected".into()));
     assert!(state.editable());
-    assert_eq!(state.text.as_deref(), Some("hello"));
+    assert_eq!(state.text, "hello");
 }
 
 #[test]
@@ -168,7 +163,7 @@ fn drafts_and_image_copies_survive_restarts_and_are_isolated_per_account() {
     let path = directory.0.join("original.png");
     std::fs::write(&path, include_bytes!("../../../assets/missing.png")).unwrap();
     let mut draft = State::default();
-    draft.text = Some("Private draft".into());
+    draft.text = "Private draft".into();
     draft.dirty = true;
     draft.media = store
         .import(
@@ -209,7 +204,7 @@ fn draft_storage_reports_corruption_and_never_restores_confirmed_posts_for_resub
     let directory = Temporary::new();
     let store = store::Store::at(directory.0.clone());
     let mut draft = State::default();
-    draft.text = Some("Already sent".into());
+    draft.text = "Already sent".into();
     draft.published_id = Some("s1".into());
     store.save("account", &[draft.clone()]).unwrap();
     assert!(store.load("account").unwrap().is_empty());
@@ -308,7 +303,7 @@ fn durable_storage_handles_long_account_keys_without_exposing_files() {
     let store = store::Store::at(directory.0.join("drafts"));
     let key = format!("https://{}.example.org#account", "a".repeat(220));
     let mut state = State::default();
-    state.text = Some("Private text".into());
+    state.text = "Private text".into();
     let original = directory.0.join("image.png");
     std::fs::write(&original, include_bytes!("../../../assets/missing.png")).unwrap();
     state.media = store
