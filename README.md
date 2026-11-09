@@ -21,3 +21,7 @@ play/pause button (or Space), seek bar, and mute button to control playback.
 Left/Right move between attachments and Escape closes the viewer. Animated
 video attachments loop and start muted. Playback stops when you leave the video.
 If playback fails, the open-in-browser button still opens the original media.
+
+To edit your own post, select its pencil button or **More → Edit post**. The
+composer loads the original text and existing attachments. Select **Save changes**
+to update the post; its audience and existing poll are preserved.

@@ -276,3 +276,5 @@ media-play = Play
 media-pause = Pause
 media-mute = Mute
 media-unmute = Unmute
+
+compose-loading-edit = Loading your post for editing…

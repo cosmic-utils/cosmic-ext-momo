@@ -23,7 +23,8 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Menu,
+    Menu(Option<String>),
+    MenuAction(Box<Message>),
     ToggleWarning(String),
     ToggleMedia(String),
     ToggleFilter(String, Context),
@@ -254,7 +255,9 @@ fn card<'a>(
 
 pub fn update(message: Message) -> Task<app::Message> {
     match message {
-        Message::Menu => Task::none(),
+        Message::Menu(_) | Message::MenuAction(_) => {
+            cosmic::task::message(app::Message::Status(message))
+        }
         Message::ToggleWarning(_)
         | Message::ToggleMedia(_)
         | Message::ToggleFilter(_, _)
@@ -383,66 +386,90 @@ fn actions<'a>(
             authenticated.then(|| Message::Bookmark(status.id.clone(), bookmarked))
         ),
         widget::space::horizontal(),
-        more_menu(status, cache),
     ]
+    .push_maybe(cache.is_me(&status.account.id).then(|| {
+        action(
+            "edit-symbolic",
+            fl!("compose-edit"),
+            None,
+            false,
+            Some(Message::Edit(status.id.clone())),
+        )
+    }))
+    .push(more_menu(status, cache))
     .spacing(4)
     .align_y(Alignment::Center);
     Some(buttons.into())
 }
 
 fn more_menu(status: &Status, cache: &Cache) -> Element<'static, Message> {
-    use widget::menu::{self, ItemHeight, ItemWidth, Tree};
     let item = |icon: &str, label: String, message| {
-        Tree::new(Into::<Element<'static, Message>>::into(
-            menu::menu_button(vec![
-                widget::icon::from_name(icon.to_string()).size(16).into(),
-                widget::space::horizontal().width(8).into(),
-                widget::text(label).into(),
-            ])
-            .on_press(message),
-        ))
+        widget::menu::menu_button(vec![
+            widget::icon::from_name(icon.to_owned()).size(16).into(),
+            widget::space::horizontal().width(8).into(),
+            widget::text(label).into(),
+        ])
+        .on_press(Message::MenuAction(Box::new(message)))
     };
-    let mut items = vec![item(
-        "edit-copy-symbolic",
-        fl!("reading-copy-text"),
-        Message::Copy(format!(
-            "{}\n{}",
-            status.spoiler_text,
-            html::plain(&status.content)
-        )),
-    )];
-    if cache.me.is_some() && !cache.is_me(&status.account.id) {
-        items.push(item(
-            "dialog-warning-symbolic",
-            fl!("reading-report"),
-            Message::Report(status.account.clone(), Some(status.id.clone())),
-        ));
-    }
-    if cache.is_me(&status.account.id) {
-        items.push(item(
-            "edit-symbolic",
-            fl!("compose-edit"),
-            Message::Edit(status.id.clone()),
-        ));
-        items.push(item(
-            "user-trash-symbolic",
-            fl!("delete-status"),
-            Message::Delete(status.id.clone()),
-        ));
-    }
+    let open = cache.reading.post_menu.as_deref() == Some(status.id.as_str());
     let root = widget::button::icon(widget::icon::from_name("view-more-symbolic"))
         .tooltip(fl!("feed-more"))
-        .on_press(Message::Menu)
+        .on_press(Message::Menu((!open).then(|| status.id.clone())))
         .class(cosmic::style::Button::MenuRoot);
     #[cfg(target_os = "linux")]
     let root = root.name(fl!("feed-more"));
-    menu::bar(vec![Tree::with_children(
-        Into::<Element<Message>>::into(root),
-        items,
-    )])
-    .item_height(ItemHeight::Dynamic(40))
-    .item_width(ItemWidth::Uniform(220))
-    .into()
+    let mut popover = widget::popover(root)
+        .position(widget::popover::Position::Bottom)
+        .on_close(Message::Menu(None));
+    if open {
+        let mut items = widget::column![item(
+            "edit-copy-symbolic",
+            fl!("reading-copy-text"),
+            Message::Copy(format!(
+                "{}\n{}",
+                status.spoiler_text,
+                html::plain(&status.content)
+            )),
+        )]
+        .spacing(0)
+        .width(220);
+        if cache.me.is_some() && !cache.is_me(&status.account.id) {
+            items = items.push(item(
+                "dialog-warning-symbolic",
+                fl!("reading-report"),
+                Message::Report(status.account.clone(), Some(status.id.clone())),
+            ));
+        }
+        if cache.is_me(&status.account.id) {
+            items = items
+                .push(item(
+                    "edit-symbolic",
+                    fl!("compose-edit"),
+                    Message::Edit(status.id.clone()),
+                ))
+                .push(item(
+                    "user-trash-symbolic",
+                    fl!("delete-status"),
+                    Message::Delete(status.id.clone()),
+                ));
+        }
+        popover = popover.popup(
+            widget::container(items).class(cosmic::style::Container::custom(|theme| {
+                use cosmic::theme::menu_bar::{MenuBarStyle, StyleSheet};
+                let style = theme.appearance(&MenuBarStyle::Default, true);
+                widget::container::Style {
+                    background: Some(style.background.into()),
+                    border: cosmic::iced::Border {
+                        color: style.border_color,
+                        width: style.border_width,
+                        radius: style.menu_border_radius.into(),
+                    },
+                    ..Default::default()
+                }
+            })),
+        );
+    }
+    popover.into()
 }
 
 fn media<'a>(

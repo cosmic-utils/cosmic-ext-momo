@@ -335,3 +335,42 @@ fn durable_storage_handles_long_account_keys_without_exposing_files() {
         );
     }
 }
+
+#[test]
+fn editing_existing_attachments_uses_cached_remote_previews_without_local_files() {
+    let mut post = post(StatusVisibility::Public);
+    post.media_attachments = serde_json::from_value(json!([
+        {"id":"image", "type":"image", "url":"https://example.org/original.png", "preview_url":"https://example.org/thumb.png"},
+        {"id":"no-preview", "type":"image", "url":"https://example.org/fallback.png"},
+        {"id":"video", "type":"video", "url":"https://example.org/video.mp4", "preview_url":"https://example.org/video.jpg"},
+        {"id":"no-video-preview", "type":"video", "url":"https://example.org/no-preview.mp4"}
+    ])).unwrap();
+    let state = State::edit(
+        &post,
+        megalodon::entities::StatusSource {
+            id: post.id.clone(),
+            text: "Text".into(),
+            spoiler_text: String::new(),
+        },
+    );
+    assert_eq!(
+        state.preview_urls(),
+        vec![
+            "https://example.org/thumb.png",
+            "https://example.org/fallback.png",
+            "https://example.org/video.jpg"
+        ]
+    );
+    let client = Client::new("https://example.org".into(), None);
+    let temporary = Temporary::new();
+    let store = store::Store::at(temporary.0.clone());
+    let mut cache = crate::cache::Cache::new();
+    for (index, url) in state.preview_urls().iter().enumerate() {
+        assert!(state.media[index].stored_name.is_none());
+        assert!(preview_handle(&state, &state.media[index], &client, &store, &cache).is_none());
+        cache
+            .handles
+            .insert(url.clone(), crate::cache::fallback_handle());
+        assert!(preview_handle(&state, &state.media[index], &client, &store, &cache).is_some());
+    }
+}

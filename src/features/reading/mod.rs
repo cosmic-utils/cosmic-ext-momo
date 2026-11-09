@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct State {
+    pub post_menu: Option<String>,
     pub warnings: HashSet<String>,
     pub media: HashSet<String>,
     pub filter_reveals: HashSet<(String, filters::Context)>,
@@ -29,6 +30,7 @@ impl State {
     }
     pub fn new(authenticated: bool) -> Self {
         Self {
+            post_menu: None,
             warnings: HashSet::new(),
             media: HashSet::new(),
             filter_reveals: HashSet::new(),
