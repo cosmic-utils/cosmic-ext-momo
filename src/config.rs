@@ -10,9 +10,12 @@ use crate::app::AppModel;
 #[derive(
     Debug, Default, Clone, serde::Serialize, serde::Deserialize, CosmicConfigEntry, Eq, PartialEq,
 )]
+#[serde(default)]
 #[version = 1]
 pub struct TootConfig {
     pub server: String,
+    /// First-run setup was completed or public browsing was chosen.
+    pub onboarding_completed: bool,
     /// Hide boosted (reblogged) statuses from timelines.
     pub hide_boosts: bool,
     /// Hide reply statuses from timelines.

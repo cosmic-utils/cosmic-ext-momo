@@ -7,6 +7,7 @@ pub mod compose;
 pub mod hashtags;
 pub mod lists;
 pub mod notifications;
+pub mod onboarding;
 pub mod search;
 pub mod settings;
 pub mod status;

@@ -4,6 +4,7 @@ use cosmic::{widget, Element};
 
 use crate::client::Session;
 use crate::config::{FeedDensity, ThemeMode, TootConfig};
+use crate::fl;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -72,10 +73,7 @@ pub fn view<'a>(
             widget::settings::section().title("Accounts"),
             |section, (index, session)| {
                 let mut row: Vec<Element<'a, Message>> = vec![
-                    Element::from(widget::text(format!(
-                        "{} · {}",
-                        session.acct, session.base_url
-                    ))),
+                    Element::from(widget::text(session.label())),
                     Element::from(widget::space::horizontal()),
                 ];
                 if index != active {
@@ -89,7 +87,7 @@ pub fn view<'a>(
                 section.add(widget::settings::item_row(row))
             },
         )
-        .add(widget::button::suggested("Add account").on_press(Message::AddAccount));
+        .add(widget::button::suggested(fl!("setup-add-account")).on_press(Message::AddAccount));
 
     widget::column![appearance_settings, timeline_settings, accounts_section]
         .spacing(spacing.space_m)
