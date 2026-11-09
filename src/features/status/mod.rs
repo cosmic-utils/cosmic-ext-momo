@@ -23,6 +23,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    ToggleActions(String),
     ToggleWarning(String),
     ToggleMedia(String),
     ToggleFilter(String, Context),
@@ -148,7 +149,9 @@ pub fn status<'a>(
                 .on_press(Message::ToggleWarning(status.id.clone())),
             );
         if !cache.reading.content_visible(status) {
-            return post.padding(spacing.space_xs).into();
+            return post
+                .padding(if density == FeedDensity::Full { 16 } else { 12 })
+                .into();
         }
     }
     post = post.push(content(status));
@@ -185,11 +188,13 @@ pub fn status<'a>(
         .push_maybe(actions(status, options, cache));
     if options.expand {
         post = post.push(
-            widget::button::standard(fl!("reading-conversation"))
+            widget::button::link(fl!("reading-conversation"))
                 .on_press(Message::ExpandStatus(status.id.clone())),
         );
     }
-    post.padding(spacing.space_xs).width(Length::Fill).into()
+    post.padding(if density == FeedDensity::Full { 16 } else { 12 })
+        .width(Length::Fill)
+        .into()
 }
 
 fn card<'a>(
@@ -253,7 +258,8 @@ fn card<'a>(
 
 pub fn update(message: Message) -> Task<app::Message> {
     match message {
-        Message::ToggleWarning(_)
+        Message::ToggleActions(_)
+        | Message::ToggleWarning(_)
         | Message::ToggleMedia(_)
         | Message::ToggleFilter(_, _)
         | Message::ReloadFilters
@@ -301,91 +307,138 @@ fn actions<'a>(
     options: StatusOptions,
     cache: &'a Cache,
 ) -> Option<Element<'a, Message>> {
-    let spacing = cosmic::theme::active().cosmic().spacing;
-
-    let delete_button = cache.is_me(&status.account.id).then(|| {
-        widget::button::icon(widget::icon::from_name("user-trash-symbolic"))
-            .on_press(Message::Delete(status.id.clone()))
-    });
-
     if !options.actions {
         return None;
     }
-    let action = |name: &str, count: u32, selected: bool| {
-        widget::button::icon(widget::icon::from_name(name.to_string()))
-            .label(count.to_string())
+    let action = |icon: &str,
+                  label: String,
+                  count: Option<u32>,
+                  selected: bool,
+                  message: Option<Message>| {
+        let label = count
+            .map(|count| format!("{label} ({count})"))
+            .unwrap_or(label);
+        let mut button = widget::button::icon(widget::icon::from_name(icon.to_string()))
+            .icon_size(18)
+            .padding(8)
+            .tooltip(label.clone())
             .class(if selected {
                 cosmic::theme::Button::Suggested
             } else {
                 cosmic::theme::Button::Icon
             })
+            .on_press_maybe(message);
+        if let Some(count) = count.filter(|count| *count > 0) {
+            let count = if count >= 1_000_000_000 {
+                format!("{:.1}b", count as f64 / 1_000_000_000.0)
+            } else if count >= 1_000_000 {
+                format!("{:.1}m", count as f64 / 1_000_000.0)
+            } else if count >= 1_000 {
+                format!("{:.1}k", count as f64 / 1_000.0)
+            } else {
+                count.to_string()
+            };
+            button = button.label(count);
+        }
+        #[cfg(target_os = "linux")]
+        let button = button.name(label);
+        button
     };
+    let authenticated = cache.me.is_some();
+    let boosted = status.reblogged.unwrap_or(false);
+    let favorited = status.favourited.unwrap_or(false);
+    let bookmarked = status.bookmarked.unwrap_or(false);
+    let public = matches!(
+        status.visibility,
+        megalodon::entities::status::StatusVisibility::Public
+            | megalodon::entities::status::StatusVisibility::Unlisted
+    );
     let buttons = widget::row![
-        action("mail-replied-symbolic", status.replies_count, false).on_press_maybe(
-            cache
-                .me
-                .is_some()
-                .then_some(Message::Reply(status.id.clone()))
+        action(
+            "mail-replied-symbolic",
+            fl!("reply"),
+            Some(status.replies_count),
+            false,
+            authenticated.then(|| Message::Reply(status.id.clone()))
         ),
         action(
             "emblem-shared-symbolic",
-            status.reblogs_count,
-            status.reblogged.unwrap_or(false)
-        )
-        .on_press_maybe(
-            status
-                .reblogged
-                .map(|value| Message::Boost(status.id.clone(), value))
+            if boosted {
+                fl!("feed-unboost")
+            } else {
+                fl!("feed-boost")
+            },
+            Some(status.reblogs_count),
+            boosted,
+            (authenticated && public).then(|| Message::Boost(status.id.clone(), boosted))
         ),
         action(
             "starred-symbolic",
-            status.favourites_count,
-            status.favourited.unwrap_or(false)
-        )
-        .on_press_maybe(
-            status
-                .favourited
-                .map(|value| Message::Favorite(status.id.clone(), value))
-        ),
-        widget::button::icon(widget::icon::from_name("bookmark-new-symbolic"))
-            .class(if status.bookmarked.unwrap_or(false) {
-                cosmic::theme::Button::Suggested
+            if favorited {
+                fl!("feed-unfavorite")
             } else {
-                cosmic::theme::Button::Icon
-            })
-            .on_press_maybe(
-                status
-                    .bookmarked
-                    .map(|value| Message::Bookmark(status.id.clone(), value))
-            ),
+                fl!("feed-favorite")
+            },
+            Some(status.favourites_count),
+            favorited,
+            authenticated.then(|| Message::Favorite(status.id.clone(), favorited))
+        ),
+        action(
+            "bookmark-new-symbolic",
+            if bookmarked {
+                fl!("feed-unbookmark")
+            } else {
+                fl!("feed-bookmark")
+            },
+            None,
+            bookmarked,
+            authenticated.then(|| Message::Bookmark(status.id.clone(), bookmarked))
+        ),
+        widget::space::horizontal(),
+        action(
+            "view-more-symbolic",
+            fl!("feed-more"),
+            None,
+            cache.reading.expanded_actions.contains(&status.id),
+            Some(Message::ToggleActions(status.id.clone()))
+        ),
     ]
-    .spacing(spacing.space_xs);
-    let secondary =
-        widget::row![
-            widget::button::standard(fl!("reading-copy-text")).on_press(Message::Copy(format!(
+    .spacing(4)
+    .align_y(Alignment::Center);
+    let mut content = widget::column![buttons].spacing(8);
+    if cache.reading.expanded_actions.contains(&status.id) {
+        let mut secondary = vec![widget::button::standard(fl!("reading-copy-text"))
+            .on_press(Message::Copy(format!(
                 "{}\n{}",
                 status.spoiler_text,
                 html::plain(&status.content)
             )))
-        ]
-        .push_maybe(
-            (cache.me.is_some() && !cache.is_me(&status.account.id)).then(|| {
-                widget::button::standard(fl!("reading-report")).on_press(Message::Report(
-                    status.account.clone(),
-                    Some(status.id.clone()),
-                ))
-            }),
-        )
-        .push_maybe(cache.is_me(&status.account.id).then(|| {
-            widget::button::standard(fl!("compose-edit")).on_press(Message::Edit(status.id.clone()))
-        }))
-        .push_maybe(delete_button)
-        .spacing(spacing.space_xs);
-    Some(
-        widget::column![buttons, secondary]
-            .spacing(spacing.space_xs)
-            .into(),
-    )
+            .into()];
+        if authenticated && !cache.is_me(&status.account.id) {
+            secondary.push(
+                widget::button::standard(fl!("reading-report"))
+                    .on_press(Message::Report(
+                        status.account.clone(),
+                        Some(status.id.clone()),
+                    ))
+                    .into(),
+            );
+        }
+        if cache.is_me(&status.account.id) {
+            secondary.push(
+                widget::button::standard(fl!("compose-edit"))
+                    .on_press(Message::Edit(status.id.clone()))
+                    .into(),
+            );
+            secondary.push(
+                widget::button::destructive(fl!("delete-status"))
+                    .on_press(Message::Delete(status.id.clone()))
+                    .into(),
+            );
+        }
+        content = content.push(widget::flex_row(secondary).spacing(8));
+    }
+    Some(content.into())
 }
 
 fn media<'a>(
@@ -460,7 +513,7 @@ fn tags(status: &Status, options: StatusOptions) -> Option<Element<'_, Message>>
             .tags
             .iter()
             .map(|tag| {
-                widget::button::suggested(format!("#{}", tag.name.clone()))
+                widget::button::link(format!("#{}", tag.name.clone()))
                     .on_press(Message::OpenLink(tag.url.clone()))
                     .into()
             })
@@ -475,54 +528,79 @@ fn header<'a>(
     cache: &'a Cache,
     density: FeedDensity,
 ) -> cosmic::widget::Row<'a, Message, cosmic::Theme> {
-    let spacing = cosmic::theme::active().cosmic().spacing;
     let avatar_size = if density == FeedDensity::Full {
-        50.0
+        40.0
     } else {
-        36.0
+        32.0
     };
-
-    let header = widget::row![
+    let display_name = if status.account.display_name.trim().is_empty() {
+        status.account.username.clone()
+    } else {
+        status.account.display_name.clone()
+    };
+    let identity = widget::column![
+        widget::button::link(display_name).on_press(Message::OpenAccount(status.account.clone())),
+        widget::text::caption(html::full_acct(&status.account)),
+    ]
+    .spacing(2)
+    .width(Length::Fill);
+    let date = status.created_at.with_timezone(&chrono::Local);
+    let label = if date.date_naive() == chrono::Local::now().date_naive() {
+        date.format("%H:%M").to_string()
+    } else {
+        date.format("%b %-d").to_string()
+    };
+    let mut exact = date.format("%Y-%m-%d %H:%M %Z").to_string();
+    if let Some(edited) = status.edited_at {
+        exact.push_str(&format!(
+            "\n{} {}",
+            fl!("reading-edited"),
+            edited
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M %Z")
+        ));
+    }
+    let time = widget::tooltip(
+        widget::button::link(if status.edited_at.is_some() {
+            format!("{label} · {}", fl!("reading-edited"))
+        } else {
+            label
+        })
+        .on_press(Message::ExpandStatus(status.id.clone())),
+        widget::text(exact),
+        widget::tooltip::Position::Top,
+    );
+    widget::row![
         widget::button::image(
             cache
                 .handles
                 .get(&status.account.avatar)
                 .cloned()
-                .unwrap_or(crate::cache::fallback_handle()),
+                .unwrap_or_else(crate::cache::fallback_handle)
         )
         .width(avatar_size)
         .height(avatar_size)
         .on_press(Message::OpenAccount(status.account.clone())),
-        widget::column![]
-            .push_maybe(
-                (!status.account.display_name.is_empty())
-                    .then(|| { widget::text(status.account.display_name.clone()).size(18) })
-            )
-            .push(
-                widget::button::link(html::full_acct(&status.account))
-                    .on_press(Message::OpenAccount(status.account.clone())),
-            )
-            .push(widget::text::caption(
-                status
-                    .created_at
-                    .with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d %H:%M %Z")
-                    .to_string()
-            ))
-            .push_maybe(status.edited_at.map(|date| {
-                widget::text::caption(format!(
-                    "{} {}",
-                    fl!("reading-edited"),
-                    date.with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M %Z")
-                ))
-            }))
-            .align_x(Alignment::Start)
-            .spacing(spacing.space_xs),
+        identity,
+        widget::column![time]
+            .push_maybe(match status.visibility {
+                megalodon::entities::status::StatusVisibility::Private => Some(widget::tooltip(
+                    widget::icon::from_name("system-lock-screen-symbolic").size(14),
+                    widget::text(fl!("feed-followers-only")),
+                    widget::tooltip::Position::Top
+                )),
+                megalodon::entities::status::StatusVisibility::Direct => Some(widget::tooltip(
+                    widget::icon::from_name("mail-read-symbolic").size(14),
+                    widget::text(fl!("feed-mentioned-only")),
+                    widget::tooltip::Position::Top
+                )),
+                _ => None,
+            })
+            .spacing(4)
+            .align_x(Alignment::End),
     ]
-    .align_y(Alignment::Center)
-    .spacing(spacing.space_xs);
-    header
+    .spacing(8)
+    .align_y(Alignment::Start)
 }
 
 fn content(status: &Status) -> Element<'_, Message> {
@@ -622,7 +700,15 @@ fn reblog_button<'a>(cache: &'a Cache, status: &'a Status) -> Option<widget::But
                     .get(&status.account.avatar)
                     .map(|avatar| widget::image(avatar).width(20).height(20))
                     .unwrap_or(crate::cache::fallback_avatar().width(20).height(20)),
-                widget::text(format!("{} boosted", status.account.display_name)),
+                widget::text::caption(format!(
+                    "{} · {}",
+                    if status.account.display_name.is_empty() {
+                        &status.account.acct
+                    } else {
+                        &status.account.display_name
+                    },
+                    fl!("feed-boosted")
+                )),
             ]
             .spacing(spacing.space_xs),
         )

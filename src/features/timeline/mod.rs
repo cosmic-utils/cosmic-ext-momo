@@ -6,13 +6,13 @@
 
 pub mod fetch;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use cosmic::{
     app::Task,
     iced::widget::scrollable::{Direction, Scrollbar},
     iced::{Length, Subscription},
-    widget, Apply, Element,
+    widget, Element,
 };
 use megalodon::entities::Status;
 
@@ -21,6 +21,7 @@ use crate::{
     cache::{self, Cache},
     client::Client,
     features::status::{self, StatusOptions},
+    fl, ui,
 };
 
 /// Which Mastodon timeline a [`Timeline`] instance renders.
@@ -72,18 +73,26 @@ pub struct Timeline {
     /// Whether at least one fetch has completed, so an empty `statuses` can
     /// be told apart from "hasn't tried yet" (still loading).
     has_loaded: bool,
+    request: u64,
+    older: bool,
+    more: bool,
+    error: Option<String>,
+    incoming: VecDeque<String>,
+    removed: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     SetClient(Client),
-    AppendStatus(Status),
+    Refresh,
+    Retry,
+    PublishNew,
+    IncomingStatus(Status),
+    PageLoaded(u64, Result<fetch::Page, String>),
     PrependStatus(Status),
     DeleteStatus(String),
     Status(status::Message),
     LoadMore(bool),
-    /// A fetch's result stream has ended (successfully, even if empty).
-    LoadComplete,
 }
 
 impl Timeline {
@@ -95,6 +104,12 @@ impl Timeline {
             max_id: None,
             loading: false,
             has_loaded: false,
+            request: 0,
+            older: false,
+            more: true,
+            error: None,
+            incoming: VecDeque::new(),
+            removed: HashSet::new(),
         }
     }
 
@@ -106,17 +121,9 @@ impl Timeline {
     /// content, so a stale account's posts don't linger after switching.
     /// Call [`Timeline::load_cached`] afterward to repopulate from disk.
     pub fn reset(&mut self, mastodon: Client) {
-        self.mastodon = mastodon;
-        self.statuses.clear();
-        self.max_id = None;
-        self.loading = false;
-        self.has_loaded = false;
-    }
-
-    /// Whether the initial fetch is still in flight (no content yet, and no
-    /// fetch has completed to confirm the feed is genuinely empty).
-    pub fn is_initial_loading(&self) -> bool {
-        self.statuses.is_empty() && !self.has_loaded
+        let request = self.request + 1;
+        *self = Self::new(mastodon, self.kind.clone());
+        self.request = request;
     }
 
     /// Load this feed's last-saved snapshot from disk (if any) so the view
@@ -146,8 +153,9 @@ impl Timeline {
             return;
         }
         let statuses: Vec<Status> = self
-            .statuses
+            .incoming
             .iter()
+            .chain(&self.statuses)
             .filter_map(|id| cache.statuses.get(id).cloned())
             .collect();
         crate::persistence::save_status_snapshot(
@@ -157,111 +165,213 @@ impl Timeline {
         );
     }
 
+    fn title(&self) -> String {
+        match &self.kind {
+            TimelineKind::Home => fl!("home"),
+            TimelineKind::Public => fl!("explore"),
+            TimelineKind::Local => fl!("local"),
+            TimelineKind::Federated => fl!("federated"),
+            TimelineKind::Favorites => fl!("favorites"),
+            TimelineKind::Bookmarks => fl!("bookmarks"),
+            TimelineKind::Tag(tag) => format!("#{tag}"),
+            TimelineKind::List(_) => fl!("lists"),
+        }
+    }
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {
-        let spacing = cosmic::theme::active().cosmic().spacing;
-
-        if let Some(notice) = crate::features::reading::filter_notice(cache) {
-            return notice.map(Message::Status);
-        }
-        if self.is_initial_loading() {
-            return widget::container(widget::indeterminate_circular().size(40.0))
-                .center(Length::Fill)
-                .into();
-        }
-
-        let context = match self.kind {
-            TimelineKind::Public
-            | TimelineKind::Local
-            | TimelineKind::Federated
-            | TimelineKind::Tag(_) => crate::features::reading::filters::Context::Public,
-            _ => crate::features::reading::filters::Context::Home,
-        };
-        let mut statuses: Vec<Element<_>> = self
-            .statuses
-            .iter()
-            .filter_map(|id| cache.statuses.get(id))
-            .filter(|status| cache.is_visible(status))
-            .filter(|status| {
-                cache.reading.filters.decision(status, context)
-                    != crate::features::reading::filters::Decision::Hide
-            })
-            .map(|status| {
-                status::status(status, StatusOptions::all().context(context), cache)
-                    .map(Message::Status)
-            })
-            .collect();
-
-        if statuses.is_empty() {
-            let mut empty = widget::column![widget::text(crate::fl!("reading-no-visible-posts"))]
-                .spacing(spacing.space_s);
-            if !self.statuses.is_empty() {
-                empty = empty.push(
-                    widget::button::standard(crate::fl!("reading-load-more"))
-                        .on_press_maybe((!self.loading).then_some(Message::LoadMore(true))),
-                );
-            }
-            if self.loading {
-                empty = empty.push(widget::indeterminate_circular().size(24.));
-            }
-            return widget::container(empty).center(Length::Fill).into();
-        }
-
-        if self.loading {
-            statuses.push(
-                widget::container(widget::indeterminate_circular().size(24.0))
-                    .center_x(Length::Fill)
-                    .padding(spacing.space_s)
-                    .into(),
+        let mut content = widget::column![widget::row![
+            widget::text::title2(self.title()),
+            widget::space::horizontal(),
+            ui::icon_action(
+                "view-refresh-symbolic",
+                fl!("feed-refresh"),
+                (!self.loading).then_some(Message::Refresh)
+            ),
+        ]
+        .align_y(cosmic::iced::Alignment::Center)]
+        .spacing(ui::GAP)
+        .width(Length::Fill);
+        if !self.incoming.is_empty() {
+            content = content.push(
+                widget::button::suggested(format!(
+                    "{} ({})",
+                    fl!("feed-show-new"),
+                    self.incoming.len()
+                ))
+                .on_press(Message::PublishNew),
             );
         }
+        if let Some(error) = &self.error {
+            content = content.push(
+                widget::column![
+                    widget::text(error),
+                    widget::button::standard(fl!("reading-retry")).on_press(Message::Retry)
+                ]
+                .spacing(8),
+            );
+        }
+        if let Some(notice) = crate::features::reading::filter_notice(cache) {
+            content = content.push(notice.map(Message::Status));
+        } else {
+            let context = match self.kind {
+                TimelineKind::Public
+                | TimelineKind::Local
+                | TimelineKind::Federated
+                | TimelineKind::Tag(_) => crate::features::reading::filters::Context::Public,
+                _ => crate::features::reading::filters::Context::Home,
+            };
+            let mut visible = 0;
+            for post in self
+                .statuses
+                .iter()
+                .filter_map(|id| cache.statuses.get(id))
+                .filter(|post| cache.is_visible(post))
+            {
+                if cache.reading.filters.decision(post, context)
+                    == crate::features::reading::filters::Decision::Hide
+                {
+                    continue;
+                }
+                visible += 1;
+                content = content.push(
+                    widget::container(
+                        status::status(post, StatusOptions::all().context(context), cache)
+                            .map(Message::Status),
+                    )
+                    .width(Length::Fill)
+                    .class(cosmic::style::Container::Card),
+                );
+            }
+            if visible == 0 && self.has_loaded && self.error.is_none() {
+                content = content.push(ui::empty(
+                    "view-list-symbolic",
+                    fl!("reading-no-visible-posts"),
+                    fl!("feed-empty-description"),
+                ));
+            }
+        }
+        if self.loading || (!self.has_loaded && self.error.is_none()) {
+            content = content.push(
+                widget::row![
+                    widget::indeterminate_circular().size(20.),
+                    widget::text::caption(fl!("feed-loading"))
+                ]
+                .spacing(8),
+            );
+        } else if self.has_loaded && self.more && self.error.is_none() {
+            content = content.push(
+                widget::button::standard(fl!("reading-load-more"))
+                    .on_press(Message::LoadMore(true)),
+            );
+        } else if self.has_loaded && self.error.is_none() && !self.statuses.is_empty() {
+            content = content.push(widget::text::caption(fl!("feed-end")));
+        }
+        widget::scrollable(
+            widget::container(content)
+                .max_width(ui::CONTENT_WIDTH)
+                .padding(16)
+                .center_x(Length::Fill),
+        )
+        .id(self.scroll_id())
+        .direction(Direction::Vertical(Scrollbar::default()))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
 
-        widget::scrollable(widget::settings::section().extend(statuses))
-            .direction(Direction::Vertical(
-                Scrollbar::default().spacing(spacing.space_xxs),
-            ))
-            .on_scroll(|viewport| {
-                Message::LoadMore(!self.loading && viewport.relative_offset().y == 1.0)
-            })
-            .apply(widget::container)
-            .max_width(700)
-            .height(Length::Fill)
-            .into()
+    fn scroll_id(&self) -> cosmic::iced::core::widget::Id {
+        cosmic::iced::core::widget::Id::new(format!(
+            "feed:{}:{}",
+            self.mastodon.cache_key(),
+            self.kind.slug()
+        ))
+    }
+    fn top(&self) -> Task<app::Message> {
+        cosmic::iced::widget::scrollable::snap_to(
+            self.scroll_id(),
+            cosmic::iced::widget::scrollable::RelativeOffset {
+                x: Some(0.0),
+                y: Some(0.0),
+            },
+        )
+    }
+    fn begin_load(&mut self, older: bool) {
+        self.request += 1;
+        self.older = older;
+        self.loading = true;
+        self.error = None;
     }
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         let mut tasks = vec![];
         match message {
             Message::SetClient(mastodon) => self.mastodon = mastodon,
-            Message::LoadMore(load) => {
-                if !self.loading && load {
-                    self.loading = true;
+            Message::Refresh if !self.loading => self.begin_load(false),
+            Message::Retry if !self.loading => self.begin_load(self.older),
+            Message::LoadMore(true) if !self.loading && self.more => self.begin_load(true),
+            Message::PublishNew => {
+                tasks.push(self.top());
+                while let Some(id) = self.incoming.pop_back() {
+                    if !self.statuses.contains(&id) {
+                        self.statuses.push_front(id);
+                    }
                 }
             }
-            Message::AppendStatus(status) => {
-                self.max_id = Some(status.id.clone());
-                if !self.statuses.contains(&status.id) {
-                    self.statuses.push_back(status.id.clone());
+            Message::IncomingStatus(post) => {
+                if self.removed.contains(&post.id) {
+                    return Task::none();
                 }
-                tasks.push(cosmic::task::message(app::Message::CacheStatus(
-                    status.clone(),
-                )));
-
+                if !self.statuses.contains(&post.id) && !self.incoming.contains(&post.id) {
+                    self.incoming.push_front(post.id.clone());
+                }
                 tasks.push(cosmic::task::message(app::Message::Fetch(
-                    cache::extract_status_images(&status),
+                    cache::extract_status_images(&post),
                 )));
+                tasks.push(cosmic::task::message(app::Message::CacheStatus(post)));
+            }
+            Message::PageLoaded(request, result) if request == self.request => {
+                self.loading = false;
+                self.has_loaded = true;
+                match result {
+                    Err(error) => self.error = Some(error),
+                    Ok(page) => {
+                        self.error = None;
+                        // A refresh replaces the page sequence so older paging cannot skip a gap in new posts.
+                        if !self.older {
+                            self.statuses.clear();
+                            tasks.push(self.top());
+                        }
+                        self.more = page.more && (page.cursor != self.max_id || !self.older);
+                        self.max_id = page.cursor;
+                        for post in page.statuses {
+                            if self.removed.contains(&post.id) {
+                                continue;
+                            }
+                            self.incoming.retain(|id| id != &post.id);
+                            if !self.statuses.contains(&post.id) {
+                                self.statuses.push_back(post.id.clone());
+                            }
+                            tasks.push(cosmic::task::message(app::Message::Fetch(
+                                cache::extract_status_images(&post),
+                            )));
+                            tasks.push(cosmic::task::message(app::Message::CacheStatus(post)));
+                        }
+                    }
+                }
             }
             Message::PrependStatus(status) => {
+                self.incoming.retain(|id| id != &status.id);
                 if !self.statuses.contains(&status.id) {
                     self.statuses.push_front(status.id.clone());
                 }
                 tasks.push(cosmic::task::message(app::Message::CacheStatus(status)));
             }
-            Message::DeleteStatus(id) => self.statuses.retain(|status_id| *status_id != id),
-            Message::LoadComplete => {
-                self.loading = false;
-                self.has_loaded = true;
+            Message::DeleteStatus(id) => {
+                self.removed.insert(id.clone());
+                self.statuses.retain(|post| post != &id);
+                self.incoming.retain(|post| post != &id);
             }
             Message::Status(message) => tasks.push(status::update(message)),
+            _ => (),
         }
         Task::batch(tasks)
     }
@@ -279,14 +389,22 @@ impl Timeline {
         // feed already has statuses to show, but still needs its first real
         // network fetch to refresh in the background — checking emptiness
         // here would skip that fetch entirely until the user scrolls.
-        if !self.has_loaded || self.loading {
+        if (!self.has_loaded && self.error.is_none()) || self.loading {
             Subscription::batch(vec![fetch::timeline(
                 self.mastodon.clone(),
                 self.kind.clone(),
-                self.max_id.clone(),
+                if self.older {
+                    self.max_id.clone()
+                } else {
+                    None
+                },
+                self.request,
             )])
         } else {
             Subscription::none()
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

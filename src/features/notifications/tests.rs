@@ -155,14 +155,16 @@ fn incoming_activity_waits_for_explicit_publish_and_is_deduplicated() {
 #[test]
 fn pagination_uses_next_link_rather_than_previous_or_numeric_id_assumptions() {
     assert_eq!(
-        fetch::next_cursor(
+        crate::client::next_cursor(
             r#"<https://example.org/api/v1/notifications?min_id=99>; rel="prev", <https://example.org/api/v1/notifications?max_id=opaque%2Bid>; rel="next""#
         ),
         Some("opaque+id".into())
     );
     assert_eq!(
-        fetch::next_cursor(r#"<https://example.org/api/v1/notifications?min_id=99>; rel="prev""#),
+        crate::client::next_cursor(
+            r#"<https://example.org/api/v1/notifications?min_id=99>; rel="prev""#
+        ),
         None
     );
-    assert_eq!(fetch::next_cursor("malformed"), None);
+    assert_eq!(crate::client::next_cursor("malformed"), None);
 }

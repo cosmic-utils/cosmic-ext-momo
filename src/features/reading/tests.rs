@@ -195,6 +195,7 @@ fn profile_pagination_deduplicates_posts_and_stops_at_the_end() {
 #[test]
 fn clearing_account_cache_drops_reveal_overrides_and_poll_selections() {
     let mut cache = Cache::new();
+    cache.reading.expanded_actions.insert("s1".into());
     cache.reading.warnings.insert("s1".into());
     cache.reading.media.insert("s1".into());
     cache
@@ -204,7 +205,8 @@ fn clearing_account_cache_drops_reveal_overrides_and_poll_selections() {
     cache.reading.choices.insert("p1".into(), vec![0]);
     cache.clear();
     assert!(
-        cache.reading.warnings.is_empty()
+        cache.reading.expanded_actions.is_empty()
+            && cache.reading.warnings.is_empty()
             && cache.reading.media.is_empty()
             && cache.reading.filter_reveals.is_empty()
             && cache.reading.choices.is_empty()
