@@ -10,6 +10,32 @@
     <p>Read timelines, explore profiles, reply to posts, and keep favorites and bookmarks. Connect multiple accounts, add images with descriptions, and watch videos.</p>
     <p>Toot is under active development.</p>
   </description>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Home feed in dark mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/feed-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Home feed in light mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/feed-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Notifications in dark mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/notifications-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Notifications in light mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/notifications-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Search in dark mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/search-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Search in light mode</caption>
+      <image type="source" width="1024" height="768">https://raw.githubusercontent.com/cosmic-utils/cosmic-ext-toot/main/assets/screenshots/search-light.png</image>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">dev.edfloreshz.Toot.desktop</launchable>
   <url type="homepage">https://github.com/cosmic-utils/cosmic-ext-toot</url>
   <url type="bugtracker">https://github.com/cosmic-utils/cosmic-ext-toot/issues</url>
