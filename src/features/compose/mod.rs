@@ -127,7 +127,7 @@ pub fn view<'a>(
                                 }
                             })
                         }),
-                        widget::text_editor(editor)
+                        widget::text_editor::text_editor(editor)
                             .placeholder(fl!("whats-happening"))
                             .height(160.)
                             .padding(spacing.space_s)
