@@ -1,6 +1,7 @@
 //! Activity inbox: grouped reactions, explicit loading states, and confirmed
 //! server mutations. New stream events are buffered to avoid moving the list
 //! while somebody is reading it.
+pub mod desktop;
 pub mod fetch;
 pub mod model;
 #[cfg(test)]
@@ -114,6 +115,9 @@ impl Notifications {
             clearing: false,
             confirm_clear: false,
         }
+    }
+    pub fn is_refresh_request(&self, request: u64) -> bool {
+        request == self.request && self.load_kind == LoadKind::Refresh
     }
     pub fn is_authenticated(&self) -> bool {
         self.mastodon.is_authenticated()

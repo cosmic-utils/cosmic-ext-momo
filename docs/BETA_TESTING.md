@@ -25,4 +25,19 @@ These require a real desktop and test account; they have not been performed as p
 
 Recovery reloads the newest home and notification pages; it does not promise a complete history of every event missed during a long outage. Older home posts remain reachable through pagination. Public feeds, profiles, and search can be refreshed or reopened for server-side changes missed offline.
 
-Desktop/unread notifications, search pagination and resolution, list editing, profile editing, autocomplete, new polls, scheduling, and private conversations belong to phase 6.
+Phase 6 adds desktop/unread notifications, paginated search with remote resolution, list/member editing, display-name/bio/follow-approval editing, follower/following browsers, completion, new polls, server-side scheduling, and private conversations. These additions still need live acceptance testing before a stable release.
+
+Unread counts are local to this device and account, with a bounded history. Visiting Notifications marks the inbox read locally. Desktop alerts apply only to the active account while Toot is running; they do not run after quitting or bypass the desktop’s Do Not Disturb settings. Alerts contain actor/event summaries, not post or private-message content. Scheduling is performed by the Mastodon server and continues when Toot is closed.
+
+## Phase 6 acceptance checks (not yet performed on a live desktop/server)
+
+- Receive mentions, follows, and boosts with Toot minimized. Check the desktop alert and unread badge, disable alerts in Settings, and try Do Not Disturb. Switch accounts and restart: counts must remain isolated, and replayed events must not produce duplicate alerts. Check missed activity after reconnecting.
+- Paste a remote handle and post URL into the appropriate search tab. Load multiple pages, change tabs/queries during requests, and retry an offline page. Results must not mix or repeat indefinitely.
+- Create/rename a list, add someone you follow, remove a member, page through members, and cancel/confirm deletion. A failed action must leave the editor recoverable; check the server before repeating a timed-out creation.
+- Edit a multiline bio, display name, and follow-approval setting. Check that unrelated profile metadata and images remain intact. Browse follower/following pages and return from an opened profile.
+- Complete mentions and hashtags in the middle of Unicode text. Move the cursor, switch drafts/accounts, and check that stale suggestions cannot overwrite text.
+- Create single/multiple-choice polls at your server’s limits. Try blank/duplicate options, overlong options, and attachments. Restart with a poll draft and confirm all options remain.
+- Schedule a post at least five minutes ahead using local time. Restart with a scheduled draft, verify server acceptance without adding a fake published post to Home, then reschedule/cancel from the app menu. Test publication after quitting Toot and recovery after an uncertain submission.
+- Start a private message from a profile, verify its recipient-only audience, reply from Private conversations, and test unread state. Check content warnings/filters, and confirm desktop alerts do not disclose private text.
+
+Automated notification delivery is tested against a temporary private D-Bus service. That verifies the wire payload without displaying a real alert; actual COSMIC notification presentation remains a desktop acceptance check.

@@ -123,6 +123,8 @@ pub struct AppModel {
     confirm_clear_cache: bool,
     clearing_cache: bool,
     generation: u64,
+    activity: notifications::desktop::Activity,
+    social: crate::features::social::Social,
     video: Option<crate::media::Player>,
     video_url: Option<String>,
     video_failed: bool,
@@ -167,6 +169,7 @@ pub struct AppModel {
     drafts: Vec<compose::State>,
     drafts_readable: bool,
     compose_request: u64,
+    completion_serial: u64,
     home: Timeline,
     notifications: notifications::Notifications,
     explore: Timeline,
@@ -217,6 +220,7 @@ pub enum Message {
     Lists(lists::Message),
     Search(search::Message),
     Settings(settings::Message),
+    Social(crate::features::social::Message),
     Account(accounts::Message),
     Status(status::Message),
     Fetch(Vec<String>),
@@ -403,6 +407,8 @@ impl Application for AppModel {
             },
             setup_serial: 1,
             sessions_loaded,
+            social: crate::features::social::Social::default(),
+            activity: notifications::desktop::Activity::load(&mastodon.cache_key()),
             mastodon: mastodon.clone(),
             sessions,
             cache: {
@@ -422,6 +428,7 @@ impl Application for AppModel {
             drafts: vec![],
             drafts_readable: true,
             compose_request: 0,
+            completion_serial: 0,
             home: Timeline::new(mastodon.clone(), TimelineKind::Home),
             notifications: notifications::Notifications::new(mastodon.clone()),
             explore: Timeline::new(mastodon.clone(), TimelineKind::Public),
@@ -436,6 +443,7 @@ impl Application for AppModel {
 
         app.load_drafts();
         app.nav.activate_position(0);
+        app.update_activity_badge();
 
         let mut tasks = vec![
             app.update_title(),
@@ -466,6 +474,16 @@ impl Application for AppModel {
             MenuAction::Settings,
         )];
         if self.mastodon.is_authenticated() {
+            items.push(menu::Item::Button(
+                fl!("private-conversations"),
+                Some(widget::icon::from_name("mail-message-new-symbolic").into()),
+                MenuAction::Conversations,
+            ));
+            items.push(menu::Item::Button(
+                fl!("scheduled-posts"),
+                Some(widget::icon::from_name("appointment-soon-symbolic").into()),
+                MenuAction::Scheduled,
+            ));
             items.push(menu::Item::Button(
                 format!(
                     "{} ({})",
@@ -549,6 +567,11 @@ impl Application for AppModel {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav.activate(id);
+        if self.nav.data::<Page>(id) == Some(&Page::Notifications) {
+            self.activity.read();
+            self.activity.save(&self.mastodon.cache_key());
+            self.update_activity_badge();
+        }
         let mut tasks = vec![];
         match self.nav.data::<Page>(id).unwrap() {
             Page::Home => tasks.push(
@@ -625,6 +648,11 @@ impl Application for AppModel {
             }
             ContextPage::Status(status) => context_drawer::context_drawer(
                 self.reader_view(self.status(status)),
+                Message::ToggleContextDrawer,
+            )
+            .title(self.context_page.title()),
+            ContextPage::Social(_) => context_drawer::context_drawer(
+                self.reader_view(self.social.view(&self.cache)),
                 Message::ToggleContextDrawer,
             )
             .title(self.context_page.title()),
@@ -1068,7 +1096,7 @@ impl Application for AppModel {
                 if state == crate::streaming::State::Unauthorized {
                     tasks.push(self.update(Message::SessionExpired));
                 } else if state == crate::streaming::State::Connected
-                    && previous == crate::streaming::State::Reconnecting
+                    && previous != crate::streaming::State::Connected
                 {
                     tasks.push(self.home.update(timeline::Message::Recover));
                     tasks.push(self.notifications.update(notifications::Message::Recover));
@@ -1104,6 +1132,9 @@ impl Application for AppModel {
             }
             Message::BackContext => {
                 if let Some(page) = self.context_history.pop() {
+                    if let ContextPage::Social(social) = &page {
+                        tasks.push(self.social.open(social.clone(), self.mastodon.clone()));
+                    }
                     self.context_page = page;
                     self.core.window.show_context = true;
                     tasks.push(self.load_reader());
@@ -1287,6 +1318,47 @@ impl Application for AppModel {
                 tasks.push(self.home.update(message));
             }
             Message::Notifications(message) => {
+                if let notifications::Message::PageLoaded(request, Ok(page)) = &message {
+                    if self.notifications.is_refresh_request(*request) {
+                        self.activity.reconcile(
+                            page.notifications
+                                .iter()
+                                .map(|notification| notification.id.clone()),
+                        );
+                        if self.nav.active_data::<Page>() == Some(&Page::Notifications) {
+                            self.activity.read();
+                        }
+                        self.activity.save(&self.mastodon.cache_key());
+                        self.update_activity_badge();
+                    }
+                }
+                if let notifications::Message::PrependNotification(notification) = &message {
+                    if self.activity.record(&notification.id) {
+                        self.activity.save(&self.mastodon.cache_key());
+                        self.update_activity_badge();
+                        if !self.config.disable_desktop_notifications {
+                            let summary = notifications::desktop::summary(notification);
+                            tasks.push(cosmic::task::future(async move {
+                                if !matches!(
+                                    tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        notifications::desktop::show(summary)
+                                    )
+                                    .await,
+                                    Ok(Ok(()))
+                                ) {
+                                    tracing::warn!("desktop notification service is unavailable");
+                                }
+                                Message::None
+                            }));
+                        }
+                    }
+                }
+                if matches!(message, notifications::Message::PublishNew) {
+                    self.activity.read();
+                    self.activity.save(&self.mastodon.cache_key());
+                    self.update_activity_badge();
+                }
                 self.cache.dirty = true;
                 tasks.push(self.notifications.update(message));
             }
@@ -1319,7 +1391,21 @@ impl Application for AppModel {
             Message::Search(message) => {
                 tasks.push(self.search.update(message));
             }
+            Message::Social(message) => {
+                tasks.push(self.social.update(message, self.mastodon.clone()))
+            }
             Message::Settings(message) => match message {
+                settings::Message::Social(page) => {
+                    tasks.push(self.update(Message::ToggleContextPage(ContextPage::Social(page))))
+                }
+                settings::Message::ToggleDesktopNotifications(enabled) => {
+                    self.config.disable_desktop_notifications = !enabled;
+                    if let Some(handler) = &self.handler {
+                        let _ = self
+                            .config
+                            .set_disable_desktop_notifications(handler, !enabled);
+                    }
+                }
                 settings::Message::ToggleHideBoosts(hide) => {
                     self.config.hide_boosts = hide;
                     self.cache.hide_boosts = hide;
@@ -1386,6 +1472,19 @@ impl Application for AppModel {
                 _ => (),
             },
             Message::Account(message) => match message {
+                accounts::Message::People(id, following) => {
+                    tasks.push(self.update(Message::ToggleContextPage(ContextPage::Social(
+                        crate::features::social::Page::People(id, following),
+                    ))))
+                }
+                accounts::Message::EditProfile => {
+                    tasks.push(self.update(Message::ToggleContextPage(ContextPage::Social(
+                        crate::features::social::Page::EditProfile,
+                    ))))
+                }
+                accounts::Message::Private(account) => {
+                    tasks.push(self.update(Message::Compose(compose::Message::Private(account))))
+                }
                 accounts::Message::Follow(id, following) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
@@ -1712,6 +1811,11 @@ impl Application for AppModel {
                         tasks.push(self.reset_and_reload_feeds());
                     }
                 }
+                if let Some(profile) = &mut self.profile {
+                    if profile.account.id == account.id {
+                        profile.account = account.clone();
+                    }
+                }
                 self.cache.me = Some(account);
             }
             Message::SetComposeLimits(limits) => {
@@ -1754,6 +1858,9 @@ impl Application for AppModel {
                 if self.context_page == context_page {
                     self.core.window.show_context = !self.core.window.show_context;
                 } else {
+                    if let ContextPage::Social(page) = &context_page {
+                        tasks.push(self.social.open(page.clone(), self.mastodon.clone()));
+                    }
                     if let ContextPage::Account(account) = &context_page {
                         if self.mastodon.is_authenticated() {
                             let mastodon = self.mastodon.clone();
@@ -1780,7 +1887,9 @@ impl Application for AppModel {
                     if self.core.window.show_context
                         && matches!(
                             self.context_page,
-                            ContextPage::Account(_) | ContextPage::Status(_)
+                            ContextPage::Account(_)
+                                | ContextPage::Status(_)
+                                | ContextPage::Social(_)
                         )
                     {
                         self.context_history.push(self.context_page.clone());
@@ -1884,6 +1993,24 @@ impl Application for AppModel {
                 if self.active_compose().is_some_and(compose::State::editable) {
                     let editing = action.is_edit();
                     self.dialog_editor.perform(action);
+                    self.completion_serial += 1;
+                    if let Some(state) = self.active_compose_mut() {
+                        state.suggestions.clear();
+                    }
+                    if self.dialog_editor.cursor().selection.is_none() {
+                        let cursor = self.dialog_editor.cursor().position;
+                        if let Some((_, query)) = compose::completion::token(
+                            &self.dialog_editor.text(),
+                            cursor.line,
+                            cursor.column,
+                        ) {
+                            let serial = self.completion_serial;
+                            tasks.push(cosmic::task::future(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                Message::Compose(compose::Message::QuerySuggestions(serial, query))
+                            }));
+                        }
+                    }
                     if editing {
                         let text = self.dialog_editor.text();
                         if let Some(state) = self.active_compose_mut() {
@@ -2016,6 +2143,7 @@ impl AppModel {
         if self.cache.me.is_none() || self.mastodon.account_id.is_empty() {
             return cosmic::task::message(Message::Error(fl!("compose-account-loading")));
         }
+        self.completion_serial += 1;
         self.compose_request += 1;
         self.dialog_editor = widget::text_editor::Content::with_text(&state.text);
         self.dialog_pages
@@ -2026,6 +2154,7 @@ impl AppModel {
         cosmic::task::message(Message::Fetch(previews))
     }
     fn close_compose_frames(&mut self) {
+        self.completion_serial += 1;
         self.compose_request += 1;
         self.dialog_pages.retain(|dialog| {
             !matches!(
@@ -2094,6 +2223,69 @@ impl AppModel {
     fn update_compose(&mut self, message: compose::Message) -> Task<Message> {
         use compose::Message as C;
         match message {
+            C::QuerySuggestions(serial, query)
+                if serial == self.completion_serial
+                    && self.active_compose().is_some_and(compose::State::editable) =>
+            {
+                let client = self.mastodon.clone();
+                return cosmic::task::future(async move {
+                    Message::Compose(C::Suggestions(
+                        serial,
+                        compose::completion::fetch(client, query).await,
+                    ))
+                });
+            }
+            C::Suggestions(serial, suggestions) if serial == self.completion_serial => {
+                if let Some(state) = self.active_compose_mut().filter(|state| state.editable()) {
+                    state.suggestions = suggestions;
+                }
+            }
+            C::Complete(value)
+                if self.active_compose().is_some_and(|state| {
+                    state.editable()
+                        && state
+                            .suggestions
+                            .iter()
+                            .any(|suggestion| suggestion.value == value)
+                }) =>
+            {
+                use unicode_segmentation::UnicodeSegmentation;
+                let cursor = self.dialog_editor.cursor();
+                if cursor.selection.is_none() {
+                    let mut text = self.dialog_editor.text();
+                    if let Some((range, query)) = compose::completion::token(
+                        &text,
+                        cursor.position.line,
+                        cursor.position.column,
+                    ) {
+                        let inserted = format!("{value} ");
+                        text.replace_range(range, &inserted);
+                        self.dialog_editor = widget::text_editor::Content::with_text(&text);
+                        let mut cursor = cursor;
+                        cursor.position.column = cursor
+                            .position
+                            .column
+                            .saturating_sub(query.graphemes(true).count())
+                            + inserted.graphemes(true).count();
+                        self.dialog_editor.move_to(cursor);
+                        self.completion_serial += 1;
+                        if let Some(state) = self.active_compose_mut() {
+                            state.text = text;
+                            state.suggestions.clear();
+                            state.changed();
+                        }
+                        self.persist_active_draft();
+                    }
+                }
+            }
+            C::QuerySuggestions(..) | C::Suggestions(..) | C::Complete(..) => (),
+            C::Private(account) => {
+                let mut state = compose::State::new(self.cache.me.as_ref());
+                state.visibility = megalodon::entities::status::StatusVisibility::Direct;
+                state.reply_ceiling = Some(state.visibility.clone());
+                state.text = format!("{} ", reading::html::full_acct(&account));
+                return self.open_compose(state);
+            }
             C::New => return self.open_compose(compose::State::new(self.cache.me.as_ref())),
             C::Reply(id) => {
                 if let Some(post) = self.cache.statuses.get(&id) {
@@ -2109,6 +2301,7 @@ impl AppModel {
                 if !self.mastodon.is_authenticated() {
                     return cosmic::task::message(Message::Error(fl!("compose-account-loading")));
                 }
+                self.completion_serial += 1;
                 self.compose_request += 1;
                 let request = self.compose_request;
                 self.dialog_pages
@@ -2231,7 +2424,8 @@ impl AppModel {
                         if !paths.is_empty()
                             && state.media.len() + paths.len()
                                 <= self.compose_limits.attachments
-                            && !state.has_poll =>
+                            && !state.has_poll
+                            && state.poll_options.is_empty() =>
                     {
                         let store = self.compose_store.clone();
                         let key = self.mastodon.cache_key();
@@ -2418,6 +2612,7 @@ impl AppModel {
                         if let Some(state) = self.active_compose_mut() {
                             state.sending = false;
                             state.published_id = Some(published.id.clone());
+                            state.published_scheduled = published.scheduled;
                         }
                         if self.persist_active_draft() {
                             self.drop_active_draft();
@@ -2427,6 +2622,8 @@ impl AppModel {
                             .toasts
                             .push(Toast::new(if editing {
                                 fl!("compose-edited")
+                            } else if published.scheduled {
+                                fl!("compose-scheduled")
                             } else {
                                 fl!("compose-posted")
                             }))
@@ -2497,6 +2694,29 @@ impl AppModel {
             change => {
                 if let Some(state) = self.active_compose_mut().filter(|state| state.editable()) {
                     match change {
+                        C::TogglePoll(enabled)
+                            if state.edit_id.is_none() && state.media.is_empty() =>
+                        {
+                            state.poll_options = if enabled {
+                                vec![String::new(), String::new()]
+                            } else {
+                                vec![]
+                            }
+                        }
+                        C::PollOption(index, value) => {
+                            if let Some(option) = state.poll_options.get_mut(index) {
+                                *option = value;
+                            }
+                        }
+                        C::AddPollOption => state.poll_options.push(String::new()),
+                        C::RemovePollOption(index)
+                            if state.poll_options.len() > 2 && index < state.poll_options.len() =>
+                        {
+                            state.poll_options.remove(index);
+                        }
+                        C::PollMultiple(value) => state.poll_multiple = value,
+                        C::PollDuration(value) => state.poll_duration = value,
+                        C::Schedule(value) if state.edit_id.is_none() => state.schedule = value,
                         C::Warning(value) => state.content_warning = value,
                         C::Spoiler(value) => state.spoiler_text = value,
                         C::Sensitive(value) => state.sensitive = value,
@@ -2642,6 +2862,9 @@ impl AppModel {
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
         self.video = None;
         self.video_url = None;
+        self.social = crate::features::social::Social::default();
+        self.activity = notifications::desktop::Activity::load(&self.mastodon.cache_key());
+        self.update_activity_badge();
         self.generation += 1;
         self.filters_loading = false;
         self.stream_state = crate::streaming::State::Connecting;
@@ -2808,6 +3031,7 @@ impl AppModel {
         self.sessions.remove(index);
         if let Some(base_url) = removed_base_url {
             crate::persistence::clear_account(&base_url);
+            notifications::desktop::clear(&base_url);
         }
 
         let mut tasks = vec![];
@@ -3203,6 +3427,24 @@ where
         instance(self.instance.clone())
     }
 
+    fn update_activity_badge(&mut self) {
+        let id = self
+            .nav
+            .iter()
+            .find(|id| self.nav.data::<Page>(*id) == Some(&Page::Notifications));
+        if let Some(id) = id {
+            let count = self.activity.count();
+            self.nav.text_set(
+                id,
+                if count == 0 {
+                    fl!("notifications")
+                } else {
+                    format!("{} ({count})", fl!("notifications"))
+                },
+            );
+        }
+    }
+
     fn update_navbar(&mut self) {
         self.nav.clear();
 
@@ -3223,6 +3465,7 @@ where
             }
         }
         self.nav.activate_position(0);
+        self.update_activity_badge();
     }
 }
 
@@ -3233,6 +3476,7 @@ pub enum ContextPage {
     Account(Account),
     Status(String),
     Settings,
+    Social(crate::features::social::Page),
 }
 
 impl ContextPage {
@@ -3242,12 +3486,15 @@ impl ContextPage {
             ContextPage::Account(_) => fl!("profile"),
             ContextPage::Status(_) => fl!("status"),
             ContextPage::Settings => fl!("feed-settings"),
+            ContextPage::Social(page) => page.title(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
+    Conversations,
+    Scheduled,
     Drafts,
     Logout,
     About,
@@ -3261,6 +3508,12 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             MenuAction::Drafts => Message::Compose(compose::Message::Drafts),
             MenuAction::Logout => Message::Dialog(DialogAction::Open(Dialog::Logout)),
+            MenuAction::Conversations => Message::ToggleContextPage(ContextPage::Social(
+                crate::features::social::Page::Conversations,
+            )),
+            MenuAction::Scheduled => Message::ToggleContextPage(ContextPage::Social(
+                crate::features::social::Page::Scheduled,
+            )),
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
         }

@@ -1,5 +1,7 @@
 //! User lists: browse the account's lists and view a selected list's timeline.
 
+pub mod editor;
+
 use cosmic::{
     app::Task,
     iced::{Alignment, Length, Subscription},
@@ -15,6 +17,8 @@ use crate::{
 };
 
 pub struct Lists {
+    editor: Option<editor::Editor>,
+    editor_serial: u64,
     mastodon: Client,
     lists: Vec<List>,
     loaded: bool,
@@ -26,6 +30,8 @@ pub struct Lists {
 #[derive(Debug, Clone)]
 pub enum Message {
     SetClient(Client),
+    Manage(Option<String>),
+    Editor(editor::Message),
     Retry,
     Failed(u64, String),
     SetLists(u64, Vec<List>),
@@ -36,6 +42,8 @@ pub enum Message {
 impl Lists {
     pub fn new(mastodon: Client) -> Self {
         Self {
+            editor: None,
+            editor_serial: 0,
             mastodon,
             lists: Vec::new(),
             loaded: false,
@@ -50,14 +58,25 @@ impl Lists {
     }
 
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {
+        if let Some(editor) = &self.editor {
+            return editor.view().map(|message| match message {
+                app::Message::Lists(message) => message,
+                _ => Message::Retry,
+            });
+        }
         let spacing = cosmic::theme::active().cosmic().spacing;
         let lists: Vec<Element<_>> = self
             .lists
             .iter()
             .map(|list| {
-                widget::button::suggested(list.title.clone())
-                    .on_press(Message::Select(list.id.clone()))
-                    .into()
+                widget::row![
+                    widget::button::suggested(list.title.clone())
+                        .on_press(Message::Select(list.id.clone())),
+                    widget::button::standard(crate::fl!("list-edit"))
+                        .on_press(Message::Manage(Some(list.id.clone())))
+                ]
+                .spacing(4)
+                .into()
             })
             .collect();
 
@@ -75,6 +94,7 @@ impl Lists {
             .into()
         });
         widget::column![
+            widget::button::suggested(crate::fl!("list-create")).on_press(Message::Manage(None)),
             notice,
             widget::scrollable(widget::row(lists).spacing(spacing.space_xs)).direction(
                 cosmic::iced::widget::scrollable::Direction::Horizontal(Default::default())
@@ -94,6 +114,49 @@ impl Lists {
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         match message {
+            Message::Manage(id) => {
+                self.request += 1;
+                self.loaded = true;
+                self.editor_serial += 1;
+                let title = id
+                    .as_ref()
+                    .and_then(|id| self.lists.iter().find(|list| &list.id == id))
+                    .map(|list| list.title.clone())
+                    .unwrap_or_default();
+                let mut editor = editor::Editor::new(id, title, self.editor_serial);
+                let task = editor.load(self.mastodon.clone(), false);
+                self.editor_serial = editor.serial;
+                self.editor = Some(editor);
+                return task;
+            }
+            Message::Editor(editor::Message::Close) => {
+                self.editor = None;
+                self.request += 1;
+                self.loaded = false;
+            }
+            Message::Editor(editor::Message::Saved(serial, Ok(list)))
+                if self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.serial == serial) =>
+            {
+                if let Some(list) = list {
+                    self.lists.retain(|old| old.id != list.id);
+                    self.lists.push(list);
+                } else if let Some(id) = self.editor.as_ref().and_then(|editor| editor.id.as_ref())
+                {
+                    self.lists.retain(|list| &list.id != id);
+                    self.selected = None;
+                }
+                self.editor = None;
+            }
+            Message::Editor(message) => {
+                if let Some(editor) = &mut self.editor {
+                    let task = editor.update(message, self.mastodon.clone());
+                    self.editor_serial = editor.serial;
+                    return task;
+                }
+            }
             Message::Retry => {
                 self.request += 1;
                 self.loaded = false;
@@ -171,4 +234,26 @@ fn fetch_lists(mastodon: Client, request: u64) -> Subscription<Message> {
             },
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn closing_and_reopening_an_editor_rejects_old_mutation_results() {
+        let mut lists = Lists::new(Client::new("https://example.org".into(), None));
+        let _ = lists.update(Message::Manage(None));
+        let old = lists.editor.as_ref().unwrap().serial;
+        let _ = lists.update(Message::Editor(editor::Message::Close));
+        let _ = lists.update(Message::Manage(None));
+        assert!(lists.editor.as_ref().unwrap().serial > old);
+        let result =
+            serde_json::from_value(serde_json::json!({"id":"old","title":"Old list"})).unwrap();
+        let _ = lists.update(Message::Editor(editor::Message::Saved(
+            old,
+            Ok(Some(result)),
+        )));
+        assert!(lists.lists.is_empty());
+        assert!(lists.editor.is_some());
+    }
 }

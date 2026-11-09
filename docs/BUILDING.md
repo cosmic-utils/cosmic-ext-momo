@@ -52,4 +52,6 @@ cargo test --locked
 just check-resources
 ```
 
+The desktop-notification integration test starts a private D-Bus and needs `dbus-daemon`. It does not display a real desktop alert.
+
 Resource checks need Python 3, `desktop-file-utils`, and `appstream`. CI runs these checks and verifies a staged development installation. See [beta testing](BETA_TESTING.md) for checks that need a desktop and a real account.
