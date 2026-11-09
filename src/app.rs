@@ -119,6 +119,9 @@ impl Page {
 
 pub struct AppModel {
     generation: u64,
+    video: Option<crate::media::Player>,
+    video_url: Option<String>,
+    video_failed: bool,
     reader_request: u64,
     filter_request: u64,
     filters_loading: bool,
@@ -234,7 +237,11 @@ pub enum Message {
     /// only logging it and silently dropping the failed action.
     Error(String),
     CloseToast(ToastId),
-    NavigateImage(bool),
+    NavigateMedia(bool),
+    VideoTick,
+    VideoPause,
+    VideoMute,
+    VideoSeek(f64),
     /// Periodic tick: flush every feed's cache to disk if anything changed.
     FlushCache,
     None,
@@ -259,8 +266,8 @@ pub enum Dialog {
     SwitchInstance(String),
     Logout,
     DeleteStatus(String),
-    /// Post image URLs (preview, original) and the selected index.
-    Image(Vec<(String, String)>, usize),
+    /// Post images and videos, with the selected index.
+    Media(Vec<crate::media::Attachment>, usize),
 }
 
 pub struct Flags {
@@ -347,6 +354,9 @@ impl Application for AppModel {
 
         let mut app = AppModel {
             generation: 0,
+            video: None,
+            video_url: None,
+            video_failed: false,
             reader_request: 0,
             filter_request: 0,
             filters_loading: false,
@@ -612,11 +622,11 @@ impl Application for AppModel {
         if self.onboarding.is_some() {
             return None;
         }
-        // The image viewer is a full-window overlay (like cosmic-files' gallery
+        // The media viewer is a full-window overlay (like cosmic-files' gallery
         // view), not a small centered dialog box, so it's built and returned
         // before the `widget::dialog()`-based match below.
-        if let Some(Dialog::Image(images, index)) = self.dialog_pages.front() {
-            return Some(self.view_image(images, *index));
+        if let Some(Dialog::Media(images, index)) = self.dialog_pages.front() {
+            return Some(self.view_media(images, *index));
         }
 
         let dialog_page = self.dialog_pages.front()?;
@@ -743,7 +753,7 @@ impl Application for AppModel {
             },
             Dialog::Logout => self.logout(),
             Dialog::DeleteStatus(id) => self.delete_status(id.clone()),
-            Dialog::Image(..) | Dialog::Report(_) => unreachable!("handled above"),
+            Dialog::Media(..) | Dialog::Report(_) => unreachable!("handled above"),
         };
 
         Some(dialog.into())
@@ -835,7 +845,13 @@ impl Application for AppModel {
             return Subscription::batch(subscriptions);
         }
 
-        if matches!(self.dialog_pages.front(), Some(Dialog::Image(..))) {
+        if self.video.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_millis(33))
+                    .map(|_| Message::VideoTick),
+            );
+        }
+        if matches!(self.dialog_pages.front(), Some(Dialog::Media(..))) {
             subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
                 let cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
                     key,
@@ -846,8 +862,9 @@ impl Application for AppModel {
                 };
                 use cosmic::iced::keyboard::{key::Named, Key};
                 match key {
-                    Key::Named(Named::ArrowLeft) => Some(Message::NavigateImage(false)),
-                    Key::Named(Named::ArrowRight) => Some(Message::NavigateImage(true)),
+                    Key::Named(Named::ArrowLeft) => Some(Message::NavigateMedia(false)),
+                    Key::Named(Named::ArrowRight) => Some(Message::NavigateMedia(true)),
+                    Key::Character(ref text) if text == " " => Some(Message::VideoPause),
                     Key::Named(Named::Escape) => Some(Message::Dialog(DialogAction::Close)),
                     _ => None,
                 }
@@ -1579,8 +1596,28 @@ impl Application for AppModel {
             Message::ToggleContextDrawer => {
                 self.core.window.show_context = !self.core.window.show_context;
             }
-            Message::NavigateImage(forward) => {
-                if let Some(Dialog::Image(images, index)) = self.dialog_pages.front_mut() {
+            Message::VideoTick => {
+                if let Some(video) = &mut self.video {
+                    video.tick();
+                }
+            }
+            Message::VideoPause => {
+                if let Some(video) = &mut self.video {
+                    video.toggle_pause();
+                }
+            }
+            Message::VideoMute => {
+                if let Some(video) = &mut self.video {
+                    video.toggle_mute();
+                }
+            }
+            Message::VideoSeek(position) => {
+                if let Some(video) = &mut self.video {
+                    video.seek(position);
+                }
+            }
+            Message::NavigateMedia(forward) => {
+                if let Some(Dialog::Media(images, index)) = self.dialog_pages.front_mut() {
                     if forward {
                         if *index + 1 < images.len() {
                             *index += 1;
@@ -1634,7 +1671,7 @@ impl Application for AppModel {
                             Dialog::Logout => {
                                 tasks.push(self.remove_account(self.sessions.active));
                             }
-                            Dialog::Image(..) => {}
+                            Dialog::Media(..) => {}
                             Dialog::Report(state) => {
                                 self.dialog_pages.push_front(Dialog::Report(state));
                             }
@@ -1673,11 +1710,30 @@ impl Application for AppModel {
             Message::FlushCache => self.flush_cache_to_disk(),
             Message::None => (),
         }
+        self.sync_video();
         scoped_task(Task::batch(tasks), self.generation)
     }
 }
 
 impl AppModel {
+    fn sync_video(&mut self) {
+        let attachment = match self.dialog_pages.front() {
+            Some(Dialog::Media(items, index)) => items.get(*index).filter(|item| item.video),
+            _ => None,
+        };
+        let url = attachment.map(|item| item.url.clone());
+        if self.video_url != url {
+            self.video = None;
+            self.video_failed = false;
+            if let Some(item) = attachment {
+                match crate::media::Player::new(&item.url, item.looping) {
+                    Ok(player) => self.video = Some(player),
+                    Err(()) => self.video_failed = true,
+                }
+            }
+            self.video_url = url;
+        }
+    }
     fn active_compose(&self) -> Option<&compose::State> {
         self.dialog_pages.iter().find_map(|dialog| {
             if let Dialog::Compose(state) = dialog {
@@ -2363,6 +2419,8 @@ impl AppModel {
     /// active account's own disk cache, so switching accounts doesn't leave
     /// the previous account's posts visible until a fresh fetch lands.
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
+        self.video = None;
+        self.video_url = None;
         self.generation += 1;
         self.filters_loading = false;
         self.filter_request += 1;
@@ -2611,34 +2669,47 @@ impl AppModel {
             )
     }
 
-    /// A full-window image overlay, in the same spirit as cosmic-files'
+    /// A full-window media overlay, in the same spirit as cosmic-files'
     /// gallery view: a translucent backdrop covering the whole window with
     /// the image centered and content-fit, rather than a small dialog box.
-    fn view_image(&self, images: &[(String, String)], index: usize) -> Element<'_, Message> {
+    fn view_media(
+        &self,
+        images: &[crate::media::Attachment],
+        index: usize,
+    ) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
-        let (preview_url, original_url) = &images[index];
-        let image: Element<'_, Message> = self
-            .cache
-            .handles
-            .get(preview_url)
-            .map(|handle| {
-                widget::image(handle)
-                    .content_fit(cosmic::iced::ContentFit::Contain)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
+        let attachment = &images[index];
+        let original_url = &attachment.url;
+        let failed = self.video_failed || self.video.as_ref().is_some_and(|video| video.error);
+        let handle = self
+            .video
+            .as_ref()
+            .and_then(|video| video.frame.as_ref())
+            .or_else(|| {
+                attachment
+                    .preview
+                    .as_ref()
+                    .and_then(|url| self.cache.handles.get(url))
+            });
+        let image: Element<'_, Message> = if attachment.video && failed {
+            widget::text(fl!("media-playback-error")).into()
+        } else if let Some(handle) = handle {
+            widget::image(handle)
+                .content_fit(cosmic::iced::ContentFit::Contain)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            widget::text(if attachment.video {
+                fl!("media-loading")
+            } else {
+                fl!("media-image-unavailable")
             })
-            .unwrap_or_else(|| widget::text("Image not available").into());
+            .into()
+        };
 
-        // Fixed, matching top/bottom bars so the image's `Length::Fill` area
-        // in between is symmetric — an empty bottom bar mirrors the header's
-        // height rather than letting the image run flush to the window edge.
-        // The fixed height is on the *wrapping container*, not the row itself,
-        // so the buttons are centered within it rather than being squashed
-        // to fit. Generous headroom above the row's own intrinsic size
-        // (buttons + padding) so the container never has to compress it —
-        // a too-tight fixed height here is what squashed the buttons before.
+        // Matching bars keep the media centered and leave room for playback controls.
         let bar_height = Length::Fixed(96.0);
 
         let header_row = widget::row![
@@ -2659,36 +2730,108 @@ impl AppModel {
             .height(bar_height)
             .align_y(Vertical::Center);
 
-        let footer = widget::container(
-            widget::row![
-                widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
-                    .class(cosmic::style::Button::Standard)
-                    .on_press_maybe((index > 0).then_some(Message::NavigateImage(false))),
-                widget::text(format!("{} / {}", index + 1, images.len())),
-                widget::button::icon(widget::icon::from_name("go-next-symbolic"))
-                    .class(cosmic::style::Button::Standard)
-                    .on_press_maybe(
-                        (index + 1 < images.len()).then_some(Message::NavigateImage(true))
-                    ),
-            ]
+        let mut controls = widget::row![]
             .spacing(spacing.space_s)
-            .align_y(cosmic::iced::Alignment::Center),
+            .align_y(cosmic::iced::Alignment::Center);
+        if let Some(video) = &self.video {
+            controls = controls
+                .push(
+                    widget::button::icon(widget::icon::from_name(if video.paused {
+                        "media-playback-start-symbolic"
+                    } else {
+                        "media-playback-pause-symbolic"
+                    }))
+                    .tooltip(if video.paused {
+                        fl!("media-play")
+                    } else {
+                        fl!("media-pause")
+                    })
+                    .on_press_maybe((!video.error).then_some(Message::VideoPause)),
+                )
+                .push(
+                    widget::button::icon(widget::icon::from_name(if video.muted {
+                        "audio-volume-muted-symbolic"
+                    } else {
+                        "audio-volume-high-symbolic"
+                    }))
+                    .tooltip(if video.muted {
+                        fl!("media-unmute")
+                    } else {
+                        fl!("media-mute")
+                    })
+                    .on_press_maybe((!video.error).then_some(Message::VideoMute)),
+                );
+            if video.duration > 0.0 && !video.error {
+                controls = controls
+                    .push(
+                        widget::slider(
+                            0.0..=video.duration as f32,
+                            video.position.min(video.duration) as f32,
+                            |value| Message::VideoSeek(value as f64),
+                        )
+                        .width(180),
+                    )
+                    .push(widget::text(format!(
+                        "{}:{:02} / {}:{:02}",
+                        video.position as u64 / 60,
+                        video.position as u64 % 60,
+                        video.duration as u64 / 60,
+                        video.duration as u64 % 60
+                    )));
+            }
+        }
+        let footer = widget::container(
+            widget::column![
+                controls,
+                widget::row![
+                    widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
+                        .class(cosmic::style::Button::Standard)
+                        .on_press_maybe((index > 0).then_some(Message::NavigateMedia(false))),
+                    widget::text(format!("{} / {}", index + 1, images.len())),
+                    widget::button::icon(widget::icon::from_name("go-next-symbolic"))
+                        .class(cosmic::style::Button::Standard)
+                        .on_press_maybe(
+                            (index + 1 < images.len()).then_some(Message::NavigateMedia(true))
+                        ),
+                ]
+                .spacing(spacing.space_s)
+                .align_y(cosmic::iced::Alignment::Center),
+            ]
+            .spacing(spacing.space_xs)
+            .align_x(cosmic::iced::Alignment::Center),
         )
         .align_x(cosmic::iced::alignment::Horizontal::Center)
         .align_y(Vertical::Center)
         .width(Length::Fill)
         .height(bar_height);
 
-        widget::column![
-            header,
-            widget::container(image).center(Length::Fill),
-            footer
-        ]
-        .apply(widget::container)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .class(cosmic::style::Container::Dialog(false))
-        .into()
+        let mut content = widget::column![header, widget::container(image).center(Length::Fill),];
+        if attachment.video {
+            let description = attachment
+                .description
+                .clone()
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| fl!("reading-no-description"));
+            content = content.push(
+                widget::container(
+                    widget::scrollable(
+                        widget::selectable_text(description)
+                            .width(Length::Fill)
+                            .center(),
+                    )
+                    .height(80.0),
+                )
+                .padding([spacing.space_xs, spacing.space_m])
+                .width(Length::Fill),
+            );
+        }
+        content
+            .push(footer)
+            .apply(widget::container)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(cosmic::style::Container::Dialog(false))
+            .into()
     }
 
     fn reload_filters(&mut self) -> Task<Message> {

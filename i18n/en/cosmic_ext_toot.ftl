@@ -268,3 +268,11 @@ compose-language-tab = Language
 compose-no-drafts-hint = Posts you start but don't publish are saved here.
 compose-discard-short = Discard
 compose-continue-draft = Continue
+
+media-playback-error = Unable to play this video. You can open it in your browser using the button above.
+media-loading = Loading video…
+media-image-unavailable = Image not available
+media-play = Play
+media-pause = Pause
+media-mute = Mute
+media-unmute = Unmute
