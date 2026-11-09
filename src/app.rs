@@ -7,7 +7,8 @@ use crate::features::compose;
 use crate::features::status::StatusOptions;
 use crate::features::timeline::{Timeline, TimelineKind};
 use crate::features::{
-    accounts, hashtags, lists, notifications, onboarding, search, settings, status, timeline,
+    accounts, hashtags, lists, notifications, onboarding, reading, search, settings, status,
+    timeline,
 };
 use crate::fl;
 use cosmic::app::{context_drawer, Core, Task};
@@ -113,6 +114,13 @@ impl Page {
 
 pub struct AppModel {
     generation: u64,
+    reader_request: u64,
+    filter_request: u64,
+    filters_loading: bool,
+    context_history: Vec<ContextPage>,
+    thread: Option<reading::thread::Thread>,
+    profile: Option<reading::profile::Profile>,
+    report_serial: u64,
     core: Core,
     about: About,
     nav: nav_bar::Model,
@@ -157,6 +165,19 @@ pub struct AppModel {
 #[derive(Debug, Clone)]
 pub enum Message {
     Scoped(u64, Box<Message>),
+    BackContext,
+    RetryReader,
+    ProfileMore,
+    ThreadLoaded(u64, Result<(Status, megalodon::entities::Context), String>),
+    ProfileLoaded(u64, Result<(Vec<Status>, Vec<Status>), String>),
+    FiltersLoaded(u64, Result<Vec<reading::filters::Filter>, String>),
+    MentionLoaded(u64, Result<Account, String>),
+    ReloadFilters,
+    PollLoaded(String, Result<megalodon::entities::Poll, String>),
+    ReportComment(String),
+    ReportForward(bool),
+    SubmitReport,
+    ReportSubmitted(u64, Result<(), String>),
     StartOnboarding,
     Onboarding(onboarding::Message),
     Open(String),
@@ -216,6 +237,7 @@ pub enum DialogAction {
 
 #[derive(Debug, Clone)]
 pub enum Dialog {
+    Report(reading::report::State),
     Compose(compose::State),
     SwitchInstance(String),
     Logout,
@@ -308,6 +330,13 @@ impl Application for AppModel {
 
         let mut app = AppModel {
             generation: 0,
+            reader_request: 0,
+            filter_request: 0,
+            filters_loading: false,
+            context_history: Vec::new(),
+            thread: None,
+            profile: None,
+            report_serial: 0,
             core,
             about,
             nav,
@@ -333,6 +362,7 @@ impl Application for AppModel {
             sessions,
             cache: {
                 let mut cache = Cache::new();
+                cache.reading = reading::State::new(mastodon.is_authenticated());
                 cache.hide_boosts = flags.config.hide_boosts;
                 cache.hide_replies = flags.config.hide_replies;
                 cache.feed_density = flags.config.feed_density;
@@ -367,6 +397,7 @@ impl Application for AppModel {
             app.bookmarks.load_cached(),
         ];
         if mastodon.is_authenticated() {
+            tasks.push(app.reload_filters());
             tasks.push(fetch_session_info(mastodon));
         }
 
@@ -503,13 +534,22 @@ impl Application for AppModel {
             )
             .title(self.context_page.title()),
             ContextPage::Account(account) => {
-                context_drawer::context_drawer(self.account(account), Message::ToggleContextDrawer)
-                    .title(self.context_page.title())
+                let content = self
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.view(&self.cache))
+                    .unwrap_or_else(|| self.account(account));
+                context_drawer::context_drawer(
+                    self.reader_view(content),
+                    Message::ToggleContextDrawer,
+                )
+                .title(self.context_page.title())
             }
-            ContextPage::Status(status) => {
-                context_drawer::context_drawer(self.status(status), Message::ToggleContextDrawer)
-                    .title(self.context_page.title())
-            }
+            ContextPage::Status(status) => context_drawer::context_drawer(
+                self.reader_view(self.status(status)),
+                Message::ToggleContextDrawer,
+            )
+            .title(self.context_page.title()),
             ContextPage::Settings => {
                 let content =
                     settings::view(&self.config, &self.sessions.sessions, self.sessions.active)
@@ -532,6 +572,9 @@ impl Application for AppModel {
         }
 
         let dialog_page = self.dialog_pages.front()?;
+        if let Dialog::Report(state) = dialog_page {
+            return Some(state.view());
+        }
 
         let dialog = match dialog_page {
             Dialog::Compose(state) => {
@@ -554,7 +597,7 @@ impl Application for AppModel {
             Dialog::SwitchInstance(instance) => self.switch_instance(instance.clone()),
             Dialog::Logout => self.logout(),
             Dialog::DeleteStatus(id) => self.delete_status(id.clone()),
-            Dialog::Image(..) => unreachable!("handled above"),
+            Dialog::Image(..) | Dialog::Report(_) => unreachable!("handled above"),
         };
 
         Some(dialog.into())
@@ -562,6 +605,9 @@ impl Application for AppModel {
 
     fn on_escape(&mut self) -> Task<Self::Message> {
         if self.onboarding.is_some() {
+            return Task::none();
+        }
+        if matches!(self.dialog_pages.front(), Some(Dialog::Report(state)) if state.sending) {
             return Task::none();
         }
         if self.dialog_pages.pop_front().is_some() {
@@ -668,6 +714,10 @@ impl Application for AppModel {
         };
 
         if self.mastodon.is_authenticated() {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_secs(60))
+                    .map(|_| Message::ReloadFilters),
+            );
             subscriptions.push(crate::streaming::stream_user_events(self.mastodon.clone()));
         }
 
@@ -690,6 +740,186 @@ impl Application for AppModel {
                     return Task::none();
                 }
                 return self.update(*message);
+            }
+            Message::BackContext => {
+                if let Some(page) = self.context_history.pop() {
+                    self.context_page = page;
+                    self.core.window.show_context = true;
+                    tasks.push(self.load_reader());
+                }
+            }
+            Message::RetryReader => tasks.push(self.load_reader()),
+            Message::ProfileMore => {
+                if let Some(profile) = &mut self.profile {
+                    if !profile.loading {
+                        profile.loading = true;
+                        profile.error = None;
+                        let (request, id, max_id) = (
+                            profile.request,
+                            profile.account.id.clone(),
+                            profile.max_id.clone(),
+                        );
+                        let client = self.mastodon.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            Message::ProfileLoaded(
+                                request,
+                                reading::profile::fetch(client, id, max_id).await,
+                            )
+                        }));
+                    }
+                }
+            }
+            Message::ThreadLoaded(request, result) => {
+                if let Some(thread) = &mut self.thread {
+                    if thread.request == request {
+                        thread.loading = false;
+                        match result {
+                            Ok((post, context)) => {
+                                thread.ancestors = context
+                                    .ancestors
+                                    .iter()
+                                    .map(|post| post.id.clone())
+                                    .collect();
+                                thread.descendants = context
+                                    .descendants
+                                    .iter()
+                                    .map(|post| post.id.clone())
+                                    .collect();
+                                let mut images = vec![];
+                                for post in context
+                                    .ancestors
+                                    .into_iter()
+                                    .chain(std::iter::once(post))
+                                    .chain(context.descendants)
+                                {
+                                    images.extend(crate::cache::extract_status_images(&post));
+                                    self.cache.insert_status(post);
+                                }
+                                tasks.push(cosmic::task::message(Message::Fetch(images)));
+                            }
+                            Err(error) => thread.error = Some(error),
+                        }
+                    }
+                }
+            }
+            Message::ProfileLoaded(request, result) => {
+                if let Some(profile) = &mut self.profile {
+                    if profile.request == request {
+                        profile.loading = false;
+                        match result {
+                            Ok((pinned, posts)) => {
+                                profile.append(&pinned, &posts);
+                                let mut images = vec![];
+                                for post in pinned.into_iter().chain(posts) {
+                                    images.extend(crate::cache::extract_status_images(&post));
+                                    self.cache.insert_status(post);
+                                }
+                                tasks.push(cosmic::task::message(Message::Fetch(images)));
+                            }
+                            Err(error) => profile.error = Some(error),
+                        }
+                    }
+                }
+            }
+            Message::ReloadFilters => {
+                if self.mastodon.is_authenticated() {
+                    tasks.push(self.reload_filters());
+                }
+            }
+            Message::FiltersLoaded(request, result) => {
+                if request == self.filter_request {
+                    self.filters_loading = false;
+                    match result {
+                        Ok(filters) => {
+                            if !self.cache.reading.filters.same_definitions(&filters) {
+                                self.cache.reading.filter_reveals.clear();
+                                self.cache.reading.media.clear();
+                            }
+                            self.cache.reading.filters = reading::filters::Filters::ready(filters);
+                        }
+                        Err(_) => self.cache.reading.filters = reading::filters::Filters::Failed,
+                    }
+                }
+            }
+            Message::MentionLoaded(request, result) => {
+                if request == self.reader_request {
+                    match result {
+                        Ok(account) => tasks.push(
+                            self.update(Message::ToggleContextPage(ContextPage::Account(account))),
+                        ),
+                        Err(error) => tasks.push(self.update(Message::Error(error))),
+                    }
+                }
+            }
+            Message::PollLoaded(id, result) => {
+                self.cache.reading.poll_busy.remove(&id);
+                match result {
+                    Ok(poll) => {
+                        self.cache.reading.polls.insert(id.clone(), poll);
+                        self.cache.reading.choices.remove(&id);
+                        self.cache.reading.poll_errors.remove(&id);
+                    }
+                    Err(error) => {
+                        self.cache.reading.poll_errors.insert(id, error);
+                    }
+                }
+            }
+            Message::ReportComment(comment) => {
+                if let Some(Dialog::Report(state)) = self.dialog_pages.front_mut() {
+                    if !state.sending {
+                        state.comment = comment;
+                    }
+                }
+            }
+            Message::ReportForward(forward) => {
+                if let Some(Dialog::Report(state)) = self.dialog_pages.front_mut() {
+                    if !state.sending {
+                        state.forward = forward;
+                    }
+                }
+            }
+            Message::SubmitReport => {
+                if let Some(Dialog::Report(state)) = self.dialog_pages.front_mut() {
+                    if state.can_submit() && self.mastodon.is_authenticated() {
+                        state.sending = true;
+                        state.error = None;
+                        let state = state.clone();
+                        let client = self.mastodon.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            let options = state.options();
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                client.report(state.account.id, Some(&options)),
+                            )
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .map(|_| ())
+                            .ok_or_else(|| fl!("reading-report-error"));
+                            Message::ReportSubmitted(state.request, result)
+                        }));
+                    }
+                }
+            }
+            Message::ReportSubmitted(request, result) => {
+                if let Some(Dialog::Report(state)) = self.dialog_pages.front_mut() {
+                    if state.request == request {
+                        match result {
+                            Ok(()) => {
+                                self.dialog_pages.pop_front();
+                                tasks.push(
+                                    self.toasts
+                                        .push(Toast::new(fl!("reading-report-sent")))
+                                        .map(cosmic::Action::App),
+                                );
+                            }
+                            Err(error) => {
+                                state.sending = false;
+                                state.error = Some(error);
+                            }
+                        }
+                    }
+                }
             }
             Message::Home(message) => {
                 tasks.push(self.home.update(message));
@@ -808,6 +1038,135 @@ impl Application for AppModel {
                 _ => tasks.push(accounts::update(message)),
             },
             Message::Status(message) => match message {
+                status::Message::ToggleWarning(id) => {
+                    if !self.cache.reading.warnings.remove(&id) {
+                        self.cache.reading.warnings.insert(id);
+                    }
+                }
+                status::Message::ToggleMedia(id) => {
+                    if !self.cache.reading.media.remove(&id) {
+                        self.cache.reading.media.insert(id);
+                    }
+                }
+                status::Message::ToggleFilter(id, context) => {
+                    if !self
+                        .cache
+                        .reading
+                        .filter_reveals
+                        .remove(&(id.clone(), context))
+                    {
+                        self.cache.reading.filter_reveals.insert((id, context));
+                    }
+                }
+                status::Message::ReloadFilters => tasks.push(self.update(Message::ReloadFilters)),
+                status::Message::Copy(text) => tasks.push(cosmic::iced::clipboard::write(text)),
+                status::Message::InlineLink(id, url) => {
+                    let mention = self
+                        .cache
+                        .statuses
+                        .get(&id)
+                        .and_then(|post| post.mentions.iter().find(|mention| mention.url == url))
+                        .map(|mention| mention.id.clone());
+                    if let Some(id) = mention {
+                        self.reader_request += 1;
+                        let request = self.reader_request;
+                        let client = self.mastodon.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                client.get_account(id),
+                            )
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .map(|response| response.json)
+                            .ok_or_else(|| fl!("reading-profile-error"));
+                            Message::MentionLoaded(request, result)
+                        }));
+                    } else {
+                        tasks.push(self.update(Message::Open(url)));
+                    }
+                }
+                status::Message::Report(account, status_id) => {
+                    if self.mastodon.is_authenticated() {
+                        self.report_serial += 1;
+                        self.dialog_pages
+                            .push_front(Dialog::Report(reading::report::State::new(
+                                self.report_serial,
+                                account,
+                                status_id,
+                            )));
+                    }
+                }
+                status::Message::PollChoice(id, choice) => {
+                    if let Some(poll) = self.find_poll(&id).cloned() {
+                        if reading::poll_open(&poll)
+                            && !poll.voted.unwrap_or(false)
+                            && !self.cache.reading.poll_busy.contains(&id)
+                        {
+                            let choices = self.cache.reading.choices.entry(id).or_default();
+                            if poll.multiple {
+                                if choices.contains(&choice) {
+                                    choices.retain(|value| *value != choice);
+                                } else if (choice as usize) < poll.options.len() {
+                                    choices.push(choice);
+                                }
+                            } else if (choice as usize) < poll.options.len() {
+                                *choices = vec![choice];
+                            }
+                        }
+                    }
+                }
+                status::Message::Vote(status_id, id) => {
+                    let choices = self
+                        .cache
+                        .reading
+                        .choices
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let allowed = self.mastodon.is_authenticated()
+                        && !self.cache.reading.poll_busy.contains(&id)
+                        && self.find_poll(&id).is_some_and(|poll| {
+                            reading::poll_open(poll)
+                                && !poll.voted.unwrap_or(false)
+                                && reading::valid_choices(poll, &choices)
+                        });
+                    if allowed {
+                        self.cache.reading.poll_busy.insert(id.clone());
+                        let client = self.mastodon.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                client.vote_poll(id.clone(), choices, Some(status_id)),
+                            )
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .map(|response| response.json)
+                            .ok_or_else(|| fl!("reading-poll-error"));
+                            Message::PollLoaded(id, result)
+                        }));
+                    }
+                }
+                status::Message::RefreshPoll(id) => {
+                    if self.cache.reading.poll_busy.insert(id.clone()) {
+                        let client = self.mastodon.clone();
+                        tasks.push(cosmic::task::future(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                client.get_poll(id.clone()),
+                            )
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .map(|response| response.json)
+                            .ok_or_else(|| fl!("reading-poll-error"));
+                            Message::PollLoaded(id, result)
+                        }));
+                    }
+                }
+
                 status::Message::Favorite(status_id, favorited) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
@@ -935,6 +1294,9 @@ impl Application for AppModel {
                 self.cache.statuses.remove(&id);
             }
             Message::Open(url) => {
+                if !reading::html::web_url(&url) {
+                    return Task::none();
+                }
                 if let Err(err) = open::that_detached(url) {
                     tracing::error!("{err}")
                 }
@@ -962,8 +1324,20 @@ impl Application for AppModel {
                             }));
                         }
                     }
+                    if !self.core.window.show_context {
+                        self.context_history.clear();
+                    }
+                    if self.core.window.show_context
+                        && matches!(
+                            self.context_page,
+                            ContextPage::Account(_) | ContextPage::Status(_)
+                        )
+                    {
+                        self.context_history.push(self.context_page.clone());
+                    }
                     self.context_page = context_page;
                     self.core.window.show_context = true;
+                    tasks.push(self.load_reader());
                 }
             }
             Message::ToggleContextDrawer => {
@@ -983,7 +1357,10 @@ impl Application for AppModel {
                     self.dialog_pages[0] = dialog_page;
                 }
                 DialogAction::Close => {
-                    self.dialog_pages.pop_front();
+                    if !matches!(self.dialog_pages.front(), Some(Dialog::Report(state)) if state.sending)
+                    {
+                        self.dialog_pages.pop_front();
+                    }
                 }
                 DialogAction::Complete => {
                     if let Some(dialog_page) = self.dialog_pages.pop_front() {
@@ -1033,6 +1410,9 @@ impl Application for AppModel {
                                 tasks.push(self.remove_account(self.sessions.active));
                             }
                             Dialog::Image(..) => {}
+                            Dialog::Report(state) => {
+                                self.dialog_pages.push_front(Dialog::Report(state));
+                            }
                         }
                     }
                 }
@@ -1178,6 +1558,12 @@ impl AppModel {
     /// the previous account's posts visible until a fresh fetch lands.
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
         self.generation += 1;
+        self.filters_loading = false;
+        self.filter_request += 1;
+        self.thread = None;
+        self.profile = None;
+        self.context_history.clear();
+        self.cache.reading = reading::State::new(self.mastodon.is_authenticated());
         self.dialog_pages.clear();
         self.dialog_editor = widget::text_editor::Content::default();
         self.core.window.show_context = false;
@@ -1212,6 +1598,7 @@ impl AppModel {
                 .update(lists::Message::SetClient(mastodon.clone())),
             self.search.update(search::Message::SetClient(mastodon)),
             Task::batch(load_tasks),
+            self.reload_filters(),
         ])
     }
 
@@ -1466,19 +1853,81 @@ impl AppModel {
         .into()
     }
 
-    fn status(&self, id: &String) -> Element<'_, Message> {
-        let status = self.cache.statuses.get(id).map(|status| {
-            status::status(
-                status,
-                StatusOptions::new(true, true, true, false),
-                &self.cache,
-            )
-            .map(timeline::Message::Status)
-            .map(Message::Home)
-            .apply(widget::container)
-            .class(cosmic::theme::Container::Dialog(false))
-        });
-        widget::column![status].into()
+    fn reload_filters(&mut self) -> Task<Message> {
+        if !self.mastodon.is_authenticated() || self.filters_loading {
+            return Task::none();
+        }
+        self.filters_loading = true;
+        if matches!(
+            self.cache.reading.filters,
+            reading::filters::Filters::Failed
+        ) {
+            self.cache.reading.filters = reading::filters::Filters::Loading;
+        }
+        self.filter_request += 1;
+        let request = self.filter_request;
+        let client = self.mastodon.clone();
+        cosmic::task::future(async move {
+            Message::FiltersLoaded(request, reading::filters::fetch(client).await)
+        })
+    }
+
+    fn find_poll(&self, id: &str) -> Option<&megalodon::entities::Poll> {
+        self.cache.reading.polls.get(id).or_else(|| {
+            self.cache
+                .statuses
+                .values()
+                .filter_map(|post| post.poll.as_ref())
+                .find(|poll| poll.id == id)
+        })
+    }
+
+    fn load_reader(&mut self) -> Task<Message> {
+        self.reader_request += 1;
+        let request = self.reader_request;
+        self.thread = None;
+        self.profile = None;
+        match self.context_page.clone() {
+            ContextPage::Status(id) => {
+                self.thread = Some(reading::thread::Thread::new(request, id.clone()));
+                let client = self.mastodon.clone();
+                cosmic::task::future(async move {
+                    Message::ThreadLoaded(request, reading::thread::fetch(client, id).await)
+                })
+            }
+            ContextPage::Account(account) => {
+                let images = vec![account.avatar.clone(), account.header.clone()];
+                let id = account.id.clone();
+                self.profile = Some(reading::profile::Profile::new(request, account));
+                let client = self.mastodon.clone();
+                Task::batch(vec![
+                    cosmic::task::message(Message::Fetch(images)),
+                    cosmic::task::future(async move {
+                        Message::ProfileLoaded(
+                            request,
+                            reading::profile::fetch(client, id, None).await,
+                        )
+                    }),
+                ])
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn reader_view<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
+        let mut view = widget::column![].spacing(12);
+        if !self.context_history.is_empty() {
+            view = view
+                .push(widget::button::standard(fl!("reading-back")).on_press(Message::BackContext));
+        }
+        view.push(content).into()
+    }
+
+    fn status(&self, _id: &String) -> Element<'_, Message> {
+        self.thread
+            .as_ref()
+            .map(|thread| thread.view(&self.cache))
+            .unwrap_or_else(|| widget::text(fl!("reading-unavailable")).into())
     }
 
     fn account<'a>(&'a self, account: &'a Account) -> Element<'a, Message> {

@@ -1,19 +1,21 @@
 //! Account profile view: bio/stats plus follow/mute/block relationship actions.
 
-use capitalize::Capitalize;
 use cosmic::{
     app::Task,
     iced::{self, alignment::Horizontal, ContentFit, Length},
-    widget, Apply, Element,
+    widget, Element,
 };
 use megalodon::entities::{Account, Relationship};
 
 use crate::app;
 use crate::cache::Cache;
+use crate::features::{reading::html, status};
+use crate::fl;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Open(String),
+    Report(Account),
     Follow(String, bool),
     Mute(String, bool),
     Block(String, bool),
@@ -40,13 +42,9 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
     });
     let stack = iced::widget::stack!(header, avatar);
     let display_name = widget::text(&account.display_name).size(18);
-    let username = widget::button::link(format!("@{}", account.username))
-        .on_press(Message::Open(account.url.clone()));
-    let bio = (!account.note.is_empty()).then_some(widget::text(
-        html2text::config::rich()
-            .string_from_read(account.note.as_bytes(), 700)
-            .unwrap(),
-    ));
+    let username =
+        widget::button::link(html::full_acct(account)).on_press(Message::Open(account.url.clone()));
+    let bio = (!account.note.is_empty()).then(|| html::view(&account.note, Message::Open));
     let joined = widget::text::caption(format!(
         "Joined on {}",
         account.created_at.format("%d %b %Y")
@@ -55,17 +53,11 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         .fields
         .iter()
         .map(|field| {
-            let value = html2text::config::rich()
-                .string_from_read(field.value.as_bytes(), 700)
-                .unwrap();
             widget::column![
-                widget::text(field.name.capitalize()),
-                widget::text(value.clone()).class(cosmic::style::Text::Accent),
+                widget::text(field.name.clone()),
+                html::view(&field.value, Message::Open)
             ]
             .width(Length::Fill)
-            .apply(widget::button::custom)
-            .class(cosmic::style::Button::Icon)
-            .on_press(Message::Open(value.clone()))
             .into()
         })
         .collect();
@@ -99,7 +91,8 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
     )
     .class(cosmic::style::Container::Card);
 
-    let relationship_actions = (!is_me).then(|| relationship_actions(account, relationship));
+    let relationship_actions =
+        (cache.me.is_some() && !is_me).then(|| relationship_actions(account, relationship));
 
     let settings = (!fields.is_empty()).then_some(widget::settings::section().extend(fields));
     let content = widget::column![
@@ -110,7 +103,9 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         bio,
         joined,
         info,
-        settings
+        settings,
+        (cache.me.is_some() && !is_me).then(|| widget::button::standard(fl!("reading-report"))
+            .on_press(Message::Report(account.clone())))
     ]
     .align_x(Horizontal::Center)
     .width(Length::Fill)
@@ -153,10 +148,11 @@ fn relationship_actions<'a>(
 /// [`Message::Block`] carry no view-only behavior of their own — they're
 /// intercepted in [`app::AppModel::update`] to perform the actual API call.
 pub fn update(message: Message) -> Task<app::Message> {
-    if let Message::Open(url) = message {
-        if let Err(err) = open::that_detached(&url) {
-            tracing::error!("{err}");
+    match message {
+        Message::Open(url) => cosmic::task::message(app::Message::Open(url)),
+        Message::Report(account) => {
+            cosmic::task::message(app::Message::Status(status::Message::Report(account, None)))
         }
+        _ => Task::none(),
     }
-    Task::none()
 }

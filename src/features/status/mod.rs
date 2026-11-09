@@ -1,7 +1,7 @@
 use cosmic::{
     app::Task,
     iced::widget::scrollable::{Direction, Scrollbar},
-    iced::{mouse::Interaction, Alignment, Length},
+    iced::{Alignment, Length},
     widget, Apply, Element,
 };
 use megalodon::entities::{Account, Status};
@@ -10,11 +10,29 @@ use crate::{
     app,
     cache::{self, Cache},
     config::FeedDensity,
-    features::compose,
+    features::{
+        compose,
+        reading::{
+            self,
+            filters::{Context, Decision},
+            html,
+        },
+    },
+    fl,
 };
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    ToggleWarning(String),
+    ToggleMedia(String),
+    ToggleFilter(String, Context),
+    ReloadFilters,
+    InlineLink(String, String),
+    Copy(String),
+    PollChoice(String, u32),
+    Vote(String, String),
+    RefreshPoll(String),
+    Report(Account, Option<String>),
     OpenAccount(Account),
     ExpandStatus(String),
     Reply(String, String),
@@ -35,6 +53,7 @@ pub struct StatusOptions {
     tags: bool,
     actions: bool,
     expand: bool,
+    context: Context,
 }
 
 impl StatusOptions {
@@ -44,7 +63,13 @@ impl StatusOptions {
             tags,
             actions,
             expand,
+            context: Context::Home,
         }
+    }
+
+    pub fn context(mut self, context: Context) -> Self {
+        self.context = context;
+        self
     }
 
     pub fn all() -> StatusOptions {
@@ -62,6 +87,7 @@ pub fn status<'a>(
     cache: &'a Cache,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
+    let status = cache.statuses.get(&status.id).unwrap_or(status);
     let reblog_button = reblog_button(cache, status);
     let status = status
         .reblog
@@ -71,19 +97,98 @@ pub fn status<'a>(
 
     let density = cache.feed_density;
 
-    widget::column![
-        reblog_button,
-        header(status, cache, density),
-        content(status, options),
-        card(status, cache, density),
-        media(status, cache, options, density),
-        tags(status, options),
-        actions(status, options, cache),
-    ]
-    .padding(spacing.space_xs)
-    .spacing(spacing.space_xs)
-    .width(Length::Fill)
-    .into()
+    let decision = cache.reading.filters.decision(status, options.context);
+    match &decision {
+        Decision::Hide => return widget::space::vertical().height(0).into(),
+        Decision::Loading => return widget::text(fl!("reading-filters-loading")).into(),
+        Decision::Failed => {
+            return widget::column![
+                widget::text(fl!("reading-filters-error")),
+                widget::button::standard(fl!("reading-retry")).on_press(Message::ReloadFilters)
+            ]
+            .into()
+        }
+        Decision::Warn(titles, _)
+            if !cache
+                .reading
+                .filter_reveals
+                .contains(&(status.id.clone(), options.context)) =>
+        {
+            return widget::column![
+                widget::text(format!(
+                    "{}: {}",
+                    fl!("reading-filtered"),
+                    titles.join(", ")
+                )),
+                widget::button::standard(fl!("reading-show-post"))
+                    .on_press(Message::ToggleFilter(status.id.clone(), options.context))
+            ]
+            .into();
+        }
+        _ => (),
+    }
+    let mut post =
+        widget::column![reblog_button, header(status, cache, density)].spacing(spacing.space_xs);
+    if matches!(decision, Decision::Warn(..)) {
+        post = post.push(
+            widget::button::standard(fl!("reading-hide-post"))
+                .on_press(Message::ToggleFilter(status.id.clone(), options.context)),
+        );
+    }
+    if !status.spoiler_text.is_empty() {
+        post = post
+            .push(widget::selectable_text(status.spoiler_text.clone()))
+            .push(
+                widget::button::standard(if cache.reading.warnings.contains(&status.id) {
+                    fl!("reading-hide-post")
+                } else {
+                    fl!("reading-show-post")
+                })
+                .on_press(Message::ToggleWarning(status.id.clone())),
+            );
+        if !cache.reading.content_visible(status) {
+            return post.padding(spacing.space_xs).into();
+        }
+    }
+    post = post.push(content(status));
+    if let Some(poll) = status.poll.as_ref() {
+        post = post.push(poll_view(status, poll, cache));
+    }
+    let blur = matches!(&decision, Decision::Blur(_))
+        || matches!(&decision, Decision::Warn(_, media_titles) if !media_titles.is_empty());
+    let hidden_media = !cache.reading.media_visible(status, blur);
+    if (status.sensitive || blur) && (!status.media_attachments.is_empty() || status.card.is_some())
+    {
+        let title = match &decision {
+            Decision::Blur(titles) | Decision::Warn(_, titles) if !titles.is_empty() => {
+                format!("{}: {}", fl!("reading-filtered-media"), titles.join(", "))
+            }
+            _ => fl!("reading-sensitive-media"),
+        };
+        post = post.push(widget::text(title)).push(
+            widget::button::standard(if hidden_media {
+                fl!("reading-show-media")
+            } else {
+                fl!("reading-hide-media")
+            })
+            .on_press(Message::ToggleMedia(status.id.clone())),
+        );
+    }
+    if !hidden_media {
+        post = post
+            .push_maybe(card(status, cache, density))
+            .push_maybe(media(status, cache, options, density));
+    }
+    post = post
+        .push_maybe(tags(status, options))
+        .push_maybe(actions(status, options, cache));
+    if options.expand {
+        post = post.push(
+            widget::button::standard(fl!("reading-conversation"))
+                .on_press(Message::ExpandStatus(status.id.clone())),
+        );
+    }
+    post.padding(spacing.space_xs).width(Length::Fill).into()
 }
 
 fn card<'a>(
@@ -147,6 +252,16 @@ fn card<'a>(
 
 pub fn update(message: Message) -> Task<app::Message> {
     match message {
+        Message::ToggleWarning(_)
+        | Message::ToggleMedia(_)
+        | Message::ToggleFilter(_, _)
+        | Message::ReloadFilters
+        | Message::InlineLink(_, _)
+        | Message::Copy(_)
+        | Message::PollChoice(_, _)
+        | Message::Vote(_, _)
+        | Message::RefreshPoll(_)
+        | Message::Report(_, _) => cosmic::task::message(app::Message::Status(message)),
         Message::OpenAccount(account) => cosmic::task::message(app::Message::ToggleContextPage(
             app::ContextPage::Account(account),
         )),
@@ -192,77 +307,81 @@ fn actions<'a>(
             .on_press(Message::Delete(status.id.clone()))
     });
 
-    let actions = (options.actions).then_some({
+    if !options.actions {
+        return None;
+    }
+    let action = |name: &str, count: u32, selected: bool| {
+        widget::button::icon(widget::icon::from_name(name.to_string()))
+            .label(count.to_string())
+            .class(if selected {
+                cosmic::theme::Button::Suggested
+            } else {
+                cosmic::theme::Button::Icon
+            })
+    };
+    let buttons = widget::row![
+        action("mail-replied-symbolic", status.replies_count, false).on_press_maybe(
+            cache.me.is_some().then_some(Message::Reply(
+                status.id.clone(),
+                status.account.acct.clone()
+            ))
+        ),
+        action(
+            "emblem-shared-symbolic",
+            status.reblogs_count,
+            status.reblogged.unwrap_or(false)
+        )
+        .on_press_maybe(
+            status
+                .reblogged
+                .map(|value| Message::Boost(status.id.clone(), value))
+        ),
+        action(
+            "starred-symbolic",
+            status.favourites_count,
+            status.favourited.unwrap_or(false)
+        )
+        .on_press_maybe(
+            status
+                .favourited
+                .map(|value| Message::Favorite(status.id.clone(), value))
+        ),
+        widget::button::icon(widget::icon::from_name("bookmark-new-symbolic"))
+            .class(if status.bookmarked.unwrap_or(false) {
+                cosmic::theme::Button::Suggested
+            } else {
+                cosmic::theme::Button::Icon
+            })
+            .on_press_maybe(
+                status
+                    .bookmarked
+                    .map(|value| Message::Bookmark(status.id.clone(), value))
+            ),
+    ]
+    .spacing(spacing.space_xs);
+    let secondary =
         widget::row![
-            widget::button::icon(widget::icon::from_name("mail-replied-symbolic"))
-                .label(status.replies_count.to_string())
-                .on_press(Message::Reply(
-                    status.id.clone(),
-                    status.account.username.clone(),
-                )),
-            widget::button::icon(widget::icon::from_name("emblem-shared-symbolic"))
-                .label(status.reblogs_count.to_string())
-                .class(
-                    status
-                        .reblogged
-                        .map(|reblogged| {
-                            if reblogged {
-                                cosmic::theme::Button::Suggested
-                            } else {
-                                cosmic::theme::Button::Icon
-                            }
-                        })
-                        .unwrap_or(cosmic::theme::Button::Icon),
-                )
-                .on_press_maybe(
-                    status
-                        .reblogged
-                        .map(|reblogged| Message::Boost(status.id.clone(), reblogged)),
-                ),
-            widget::button::icon(widget::icon::from_name("starred-symbolic"))
-                .label(status.favourites_count.to_string())
-                .class(
-                    status
-                        .favourited
-                        .map(|favourited| {
-                            if favourited {
-                                cosmic::theme::Button::Suggested
-                            } else {
-                                cosmic::theme::Button::Icon
-                            }
-                        })
-                        .unwrap_or(cosmic::theme::Button::Icon),
-                )
-                .on_press_maybe(
-                    status
-                        .favourited
-                        .map(|favourited| Message::Favorite(status.id.clone(), favourited)),
-                ),
-            widget::button::icon(widget::icon::from_name("bookmark-new-symbolic"))
-                .class(
-                    status
-                        .bookmarked
-                        .map(|bookmarked| {
-                            if bookmarked {
-                                cosmic::theme::Button::Suggested
-                            } else {
-                                cosmic::theme::Button::Icon
-                            }
-                        })
-                        .unwrap_or(cosmic::theme::Button::Icon),
-                )
-                .on_press_maybe(
-                    status
-                        .bookmarked
-                        .map(|bookmarked| Message::Bookmark(status.id.clone(), bookmarked)),
-                ),
-            widget::space::horizontal(),
+            widget::button::standard(fl!("reading-copy-text")).on_press(Message::Copy(format!(
+                "{}\n{}",
+                status.spoiler_text,
+                html::plain(&status.content)
+            )))
         ]
+        .push_maybe(
+            (cache.me.is_some() && !cache.is_me(&status.account.id)).then(|| {
+                widget::button::standard(fl!("reading-report")).on_press(Message::Report(
+                    status.account.clone(),
+                    Some(status.id.clone()),
+                ))
+            }),
+        )
         .push_maybe(delete_button)
-        .spacing(spacing.space_xs)
-        .into()
-    });
-    actions
+        .spacing(spacing.space_xs);
+    Some(
+        widget::column![buttons, secondary]
+            .spacing(spacing.space_xs)
+            .into(),
+    )
 }
 
 fn media<'a>(
@@ -303,11 +422,22 @@ fn media<'a>(
                     .unwrap_or(crate::cache::fallback_handle()),
             )
             .on_press(on_press);
-            if compact {
-                button.width(80.0).height(80.0).into()
+            let button = if compact {
+                button.width(80.0).height(80.0)
             } else {
-                button.into()
-            }
+                button.width(240.0)
+            };
+            widget::column![
+                button,
+                widget::selectable_text(
+                    media
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| fl!("reading-no-description"))
+                )
+            ]
+            .width(240.0)
+            .into()
         })
         .collect::<Vec<Element<Message>>>();
 
@@ -365,10 +495,25 @@ fn header<'a>(
                     .then(|| { widget::text(status.account.display_name.clone()).size(18) })
             )
             .push(
-                widget::button::link(format!("@{}", status.account.username.clone()))
+                widget::button::link(html::full_acct(&status.account))
                     .on_press(Message::OpenAccount(status.account.clone())),
             )
-            .align_x(Alignment::Center)
+            .push(widget::text::caption(
+                status
+                    .created_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M %Z")
+                    .to_string()
+            ))
+            .push_maybe(status.edited_at.map(|date| {
+                widget::text::caption(format!(
+                    "{} {}",
+                    fl!("reading-edited"),
+                    date.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M %Z")
+                ))
+            }))
+            .align_x(Alignment::Start)
             .spacing(spacing.space_xs),
     ]
     .align_y(Alignment::Center)
@@ -376,21 +521,90 @@ fn header<'a>(
     header
 }
 
-fn content(status: &Status, options: StatusOptions) -> Element<'_, Message> {
-    let mut status_text: Element<_> = widget::text(
-        html2text::config::rich()
-            .string_from_read(status.content.as_bytes(), 700)
-            .unwrap(),
-    )
-    .into();
+fn content(status: &Status) -> Element<'_, Message> {
+    html::view(&status.content, |url| {
+        Message::InlineLink(status.id.clone(), url)
+    })
+}
 
-    if options.expand {
-        status_text = widget::MouseArea::new(status_text)
-            .on_press(Message::ExpandStatus(status.id.clone()))
-            .interaction(Interaction::Pointer)
-            .into();
+fn poll_view<'a>(
+    status: &'a Status,
+    original: &'a megalodon::entities::Poll,
+    cache: &'a Cache,
+) -> Element<'a, Message> {
+    let poll = cache.reading.polls.get(&original.id).unwrap_or(original);
+    let choices = cache
+        .reading
+        .choices
+        .get(&poll.id)
+        .cloned()
+        .unwrap_or_default();
+    let busy = cache.reading.poll_busy.contains(&poll.id);
+    let can_vote =
+        cache.me.is_some() && reading::poll_open(poll) && !poll.voted.unwrap_or(false) && !busy;
+    let mut view = widget::column![].spacing(8);
+    for (index, option) in poll.options.iter().enumerate() {
+        let label = match option.votes_count {
+            Some(votes) => format!("{} — {}", option.title, votes),
+            None => option.title.clone(),
+        };
+        if can_vote {
+            let id = poll.id.clone();
+            if poll.multiple {
+                view = view.push(
+                    widget::checkbox(choices.contains(&(index as u32)))
+                        .label(label)
+                        .on_toggle(move |_| Message::PollChoice(id.clone(), index as u32)),
+                );
+            } else {
+                view = view.push(widget::radio(
+                    widget::text(label),
+                    index as u32,
+                    choices.first().copied(),
+                    move |index| Message::PollChoice(id.clone(), index),
+                ));
+            }
+        } else {
+            view = view.push(widget::selectable_text(label));
+        }
     }
-    status_text
+    view = view.push(widget::text::caption(format!(
+        "{}: {}",
+        fl!("reading-votes"),
+        poll.votes_count
+    )));
+    if let Some(expiry) = poll.expires_at {
+        view = view.push(widget::text::caption(format!(
+            "{} {}",
+            if reading::poll_open(poll) {
+                fl!("reading-poll-ends")
+            } else {
+                fl!("reading-poll-ended")
+            },
+            expiry
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M %Z")
+        )));
+    }
+    if can_vote {
+        view = view.push(
+            widget::button::suggested(fl!("reading-vote")).on_press_maybe(
+                reading::valid_choices(poll, &choices)
+                    .then_some(Message::Vote(status.id.clone(), poll.id.clone())),
+            ),
+        );
+    }
+    view = view.push(
+        widget::button::standard(fl!("reading-refresh-poll"))
+            .on_press_maybe((!busy).then_some(Message::RefreshPoll(poll.id.clone()))),
+    );
+    if busy {
+        view = view.push(widget::indeterminate_circular().size(24.));
+    }
+    if let Some(error) = cache.reading.poll_errors.get(&poll.id) {
+        view = view.push(widget::text(error));
+    }
+    view.into()
 }
 
 fn reblog_button<'a>(cache: &'a Cache, status: &'a Status) -> Option<widget::Button<'a, Message>> {
