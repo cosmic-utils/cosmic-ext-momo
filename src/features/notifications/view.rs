@@ -64,14 +64,21 @@ pub fn notification<'a>(notification: &'a Notification, cache: &'a Cache) -> Ele
     let action = widget::button::custom(
         widget::row![avatar_url, widget::text(action)].spacing(spacing.space_xs),
     )
-    .on_press_maybe(notification.account.as_ref().map(|account| {
-        Message::Status(status::Message::OpenAccount(account.clone()))
-    }));
+    .on_press_maybe(
+        notification
+            .account
+            .as_ref()
+            .map(|account| Message::Status(status::Message::OpenAccount(account.clone()))),
+    );
 
     let content = notification.status.as_ref().map(|status_data| {
         widget::container(
-            status::status(status_data, StatusOptions::new(false, true, false, true), cache)
-                .map(Message::Status),
+            status::status(
+                status_data,
+                StatusOptions::new(false, true, false, true),
+                cache,
+            )
+            .map(Message::Status),
         )
         .padding(spacing.space_xxs)
         .class(cosmic::theme::Container::Dialog(false))
@@ -94,7 +101,8 @@ pub fn notification<'a>(notification: &'a Notification, cache: &'a Cache) -> Ele
             .spacing(spacing.space_xs)
         });
 
-    let content = widget::column![action, follow_request_actions, content].spacing(spacing.space_xs);
+    let content =
+        widget::column![action, follow_request_actions, content].spacing(spacing.space_xs);
 
     widget::settings::flex_item_row(vec![content.into()])
         .padding(spacing.space_xs)

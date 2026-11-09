@@ -7,7 +7,9 @@ use cosmic::{
 
 use crate::app::AppModel;
 
-#[derive(Debug, Default, Clone, CosmicConfigEntry, Eq, PartialEq)]
+#[derive(
+    Debug, Default, Clone, serde::Serialize, serde::Deserialize, CosmicConfigEntry, Eq, PartialEq,
+)]
 #[version = 1]
 pub struct TootConfig {
     pub server: String,

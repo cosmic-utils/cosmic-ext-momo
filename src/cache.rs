@@ -60,7 +60,9 @@ impl Cache {
 
     /// Whether the given account id belongs to the authenticated user.
     pub fn is_me(&self, account_id: &str) -> bool {
-        self.me.as_ref().is_some_and(|account| account.id == account_id)
+        self.me
+            .as_ref()
+            .is_some_and(|account| account.id == account_id)
     }
 
     pub fn insert_status(&mut self, status: Status) {

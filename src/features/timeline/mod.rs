@@ -122,8 +122,11 @@ impl Timeline {
     /// Load this feed's last-saved snapshot from disk (if any) so the view
     /// has something to render immediately, before the network fetch lands.
     pub fn load_cached(&mut self) -> Task<app::Message> {
+        if self.mastodon.is_authenticated() && self.mastodon.account_id.is_empty() {
+            return Task::none();
+        }
         let cached: Vec<Status> =
-            crate::persistence::load_snapshot(&self.mastodon.base_url, &self.kind.slug());
+            crate::persistence::load_snapshot(&self.mastodon.cache_key(), &self.kind.slug());
         let mut tasks = vec![];
         for status in cached {
             if !self.statuses.contains(&status.id) {
@@ -139,13 +142,16 @@ impl Timeline {
 
     /// Persist the currently-cached statuses for this feed to disk.
     pub fn save_cached(&self, cache: &Cache) {
+        if self.mastodon.is_authenticated() && self.mastodon.account_id.is_empty() {
+            return;
+        }
         let statuses: Vec<Status> = self
             .statuses
             .iter()
             .filter_map(|id| cache.statuses.get(id).cloned())
             .collect();
         crate::persistence::save_status_snapshot(
-            &self.mastodon.base_url,
+            &self.mastodon.cache_key(),
             &self.kind.slug(),
             &statuses,
         );
