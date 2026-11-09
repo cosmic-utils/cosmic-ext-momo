@@ -30,7 +30,6 @@ confirm-authorization-description = Kopiera auktoriseringskoden från webbläsar
 authorization-code = Auktoriseringskod
 
 ## Kontext
-about = Om
 profile = Profil
 status = Status
 

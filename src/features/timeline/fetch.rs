@@ -114,10 +114,14 @@ pub fn timeline(
                         }
                     })
                     .await;
-                    let result = result
-                        .ok()
-                        .and_then(Result::ok)
-                        .ok_or_else(|| crate::fl!("feed-load-error"));
+                    let result = match result {
+                        Ok(Ok(page)) => Ok(page),
+                        Ok(Err(error)) => Err(crate::client::api_error(
+                            &error,
+                            crate::fl!("feed-load-error"),
+                        )),
+                        Err(_) => Err(crate::fl!("feed-load-error")),
+                    };
                     let _ = output.send(Message::PageLoaded(request, result)).await;
 
                     std::future::pending().await

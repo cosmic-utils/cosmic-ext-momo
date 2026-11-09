@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.edfloreshz.Toot</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Toot</name>
+  <summary>Your corner of the fediverse</summary>
+  <description>
+    <p>Toot is a Mastodon client made for the COSMIC desktop. Follow conversations, discover new voices, and share your thoughts from an app that feels at home on your desktop.</p>
+    <p>Read timelines, explore profiles, reply to posts, and keep favorites and bookmarks. Connect multiple accounts, add images with descriptions, and watch videos.</p>
+    <p>Toot is under active development.</p>
+  </description>
+  <launchable type="desktop-id">dev.edfloreshz.Toot.desktop</launchable>
+  <url type="homepage">https://github.com/cosmic-utils/cosmic-ext-toot</url>
+  <url type="bugtracker">https://github.com/cosmic-utils/cosmic-ext-toot/issues</url>
+  <url type="vcs-browser">https://github.com/cosmic-utils/cosmic-ext-toot</url>
+  <developer id="io.github.cosmic-utils"><name>Toot contributors</name></developer>
+  <provides><binary>cosmic-ext-toot</binary></provides>
+  <categories><category>Network</category><category>InstantMessaging</category></categories>
+  <project_group>COSMIC</project_group>
+  <content_rating type="oars-1.1"/>
+</component>

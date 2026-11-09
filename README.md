@@ -27,3 +27,5 @@ Toot is under active development. Features and installation options are still ta
 Found a bug or have an idea? [Open an issue](https://github.com/cosmic-utils/cosmic-ext-toot/issues) and tell us about it.
 
 Toot is free and open source, licensed under the [GNU GPL v3](LICENSE).
+
+For installation from source, see the [build guide](docs/BUILDING.md). Want to help test or translate? See the [beta checklist](docs/BETA_TESTING.md) and [translation guide](docs/TRANSLATING.md).

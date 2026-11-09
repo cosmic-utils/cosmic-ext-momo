@@ -134,3 +134,76 @@ fn a_late_page_cannot_restore_a_stream_deleted_post() {
     assert_eq!(feed.statuses, ["2".to_string()]);
     assert!(feed.incoming.is_empty());
 }
+
+#[test]
+fn edits_update_boosts_and_notifications_and_survive_late_rest_responses() {
+    let mut cache = Cache::new();
+    let original = post("1");
+    let mut boost = post("boost");
+    boost.reblog = Some(Box::new(original.clone()));
+    cache.insert_status(boost.clone());
+    let mut activity = notification("n1", "mention", "alice", "2026-01-01T12:00:00Z", true);
+    activity.status = Some(original.clone());
+    cache.insert_notification(activity.clone());
+    let mut edited = original.clone();
+    edited.content = "<p>Edited</p>".into();
+    edited.edited_at = Some(chrono::Utc::now());
+    cache.insert_status(edited.clone());
+    cache.insert_status(boost); // old embedded copy must not replace the edit
+    cache.insert_notification(activity);
+    cache.insert_status(original);
+    assert_eq!(cache.statuses["1"].content, edited.content);
+    assert_eq!(
+        cache.statuses["boost"].reblog.as_ref().unwrap().content,
+        edited.content
+    );
+    assert_eq!(
+        cache.notifications["n1"].status.as_ref().unwrap().content,
+        edited.content
+    );
+}
+
+#[test]
+fn deletions_remove_boosts_and_notifications_and_reject_late_copies() {
+    let mut cache = Cache::new();
+    let original = post("1");
+    let mut boost = post("boost");
+    boost.reblog = Some(Box::new(original.clone()));
+    let mut activity = notification("n1", "mention", "alice", "2026-01-01T12:00:00Z", true);
+    activity.status = Some(original.clone());
+    cache.insert_status(boost.clone());
+    cache.insert_notification(activity.clone());
+    let removed = cache.delete_status("1");
+    assert!(removed.contains(&"boost".to_owned()));
+    cache.insert_status(original);
+    cache.insert_status(boost);
+    cache.insert_notification(activity);
+    assert!(cache.statuses.is_empty());
+    assert!(cache.notifications.is_empty());
+    cache.clear();
+    // Tombstones belong to one account, not the next account on the same server.
+    cache.insert_status(post("1"));
+    assert!(cache.statuses.contains_key("1"));
+}
+
+#[test]
+fn reconnect_supersedes_an_inflight_page_without_discarding_visible_posts() {
+    let mut feed = feed();
+    let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1"], "old", true))));
+    let _ = feed.update(Message::LoadMore);
+    let old_request = feed.request;
+    let _ = feed.update(Message::Recover);
+    assert!(feed.loading && !feed.older);
+    assert_eq!(feed.statuses, ["1".to_owned()]);
+    let _ = feed.update(Message::PageLoaded(
+        old_request,
+        Ok(page(&["stale"], "old", false)),
+    ));
+    assert!(feed.loading);
+    let _ = feed.update(Message::PageLoaded(
+        feed.request,
+        Ok(page(&["new", "1"], "next", true)),
+    ));
+    assert_eq!(feed.statuses, ["new".to_owned(), "1".to_owned()]);
+    assert_eq!(feed.max_id.as_deref(), Some("next"));
+}

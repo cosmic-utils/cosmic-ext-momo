@@ -21,6 +21,8 @@ pub struct Hashtags {
     mastodon: Client,
     followed: Vec<Tag>,
     loaded: bool,
+    error: Option<String>,
+    request: u64,
     /// Tags the user has unfollowed during this visit to the page. Kept
     /// visible (with an updated button) until the page is left and revisited,
     /// at which point the followed-tags list is refetched and they drop out.
@@ -32,10 +34,12 @@ pub struct Hashtags {
 #[derive(Debug, Clone)]
 pub enum Message {
     SetClient(Client),
+    Retry,
+    Failed(u64, String),
     /// The page became active again; refresh the followed list from the
     /// server so tags unfollowed earlier finally disappear.
     Refresh,
-    SetFollowed(Vec<Tag>),
+    SetFollowed(u64, Vec<Tag>),
     FilterChanged(String),
     Select(String),
     /// Deselect the current tag, returning to the followed-tags list.
@@ -52,6 +56,8 @@ impl Hashtags {
             mastodon,
             followed: Vec::new(),
             loaded: false,
+            error: None,
+            request: 0,
             unfollowed: HashSet::new(),
             filter: String::new(),
             selected: None,
@@ -69,7 +75,7 @@ impl Hashtags {
         // (with a way back), rather than showing both at once.
         if let Some(timeline) = &self.selected {
             return widget::column![
-                widget::button::standard("← Back to hashtags").on_press(Message::Deselect),
+                widget::button::standard(crate::fl!("tags-back")).on_press(Message::Deselect),
                 timeline.view(cache).map(Message::Timeline),
             ]
             .spacing(spacing.space_xs)
@@ -83,8 +89,8 @@ impl Hashtags {
             .into();
         }
 
-        let filter_input =
-            widget::text_input("Filter hashtags", &self.filter).on_input(Message::FilterChanged);
+        let filter_input = widget::text_input(crate::fl!("tags-filter"), &self.filter)
+            .on_input(Message::FilterChanged);
 
         let filter = self.filter.to_lowercase();
         let section = self
@@ -92,7 +98,7 @@ impl Hashtags {
             .iter()
             .filter(|tag| filter.is_empty() || tag.name.to_lowercase().contains(&filter))
             .fold(
-                widget::settings::section().title("Followed hashtags"),
+                widget::settings::section().title(crate::fl!("tags-followed")),
                 |section, tag| {
                     let following = !self.unfollowed.contains(&tag.name);
                     section.add(widget::settings::item_row(vec![
@@ -100,14 +106,27 @@ impl Hashtags {
                             .on_press(Message::Select(tag.name.clone()))
                             .into(),
                         widget::space::horizontal().into(),
-                        widget::button::standard(if following { "Unfollow" } else { "Follow" })
-                            .on_press(Message::ToggleFollow(tag.name.clone(), following))
-                            .into(),
+                        widget::button::standard(if following {
+                            crate::fl!("action-unfollow")
+                        } else {
+                            crate::fl!("action-follow")
+                        })
+                        .on_press(Message::ToggleFollow(tag.name.clone(), following))
+                        .into(),
                     ]))
                 },
             );
 
+        let notice: Option<Element<'_, Message>> = self.error.as_ref().map(|error| {
+            widget::column![
+                widget::text(error),
+                widget::button::standard(crate::fl!("reading-retry")).on_press(Message::Retry)
+            ]
+            .spacing(8)
+            .into()
+        });
         widget::column![
+            notice,
             filter_input,
             widget::scrollable(section)
                 .width(Length::Fill)
@@ -124,6 +143,15 @@ impl Hashtags {
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         match message {
+            Message::Retry => {
+                self.request += 1;
+                self.loaded = false;
+                self.error = None;
+            }
+            Message::Failed(request, error) if request == self.request => {
+                self.loaded = true;
+                self.error = Some(error);
+            }
             Message::SetClient(mastodon) => {
                 self.mastodon = mastodon.clone();
                 if let Some(timeline) = &mut self.selected {
@@ -131,14 +159,18 @@ impl Hashtags {
                 }
             }
             Message::Refresh => {
+                self.request += 1;
+                self.error = None;
                 self.loaded = false;
                 self.unfollowed.clear();
             }
-            Message::SetFollowed(tags) => {
+            Message::SetFollowed(request, tags) if request == self.request => {
                 self.followed = tags;
                 self.loaded = true;
+                self.error = None;
             }
             Message::FilterChanged(filter) => self.filter = filter,
+            Message::SetFollowed(..) | Message::Failed(..) => (),
             Message::Select(name) => {
                 let mut timeline = Timeline::new(self.mastodon.clone(), TimelineKind::Tag(name));
                 let task = timeline.load_cached();
@@ -159,9 +191,10 @@ impl Hashtags {
                             name,
                             response.json.following.unwrap_or(!following),
                         )),
-                        Err(err) => {
-                            app::Message::Error(format!("Couldn't update hashtag follow: {err}"))
-                        }
+                        Err(err) => app::Message::Error(crate::client::api_error(
+                            &err,
+                            crate::fl!("action-error"),
+                        )),
                     }
                 });
             }
@@ -184,7 +217,7 @@ impl Hashtags {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![];
         if self.is_authenticated() && !self.loaded {
-            subscriptions.push(fetch_followed_tags(self.mastodon.clone()));
+            subscriptions.push(fetch_followed_tags(self.mastodon.clone(), self.request));
         }
         if let Some(timeline) = &self.selected {
             subscriptions.push(timeline.subscription().map(Message::Timeline));
@@ -193,20 +226,31 @@ impl Hashtags {
     }
 }
 
-fn fetch_followed_tags(mastodon: Client) -> Subscription<Message> {
-    Subscription::run_with(mastodon, |mastodon| {
+fn fetch_followed_tags(mastodon: Client, request: u64) -> Subscription<Message> {
+    Subscription::run_with((mastodon, request), |(mastodon, request)| {
+        let request = *request;
         let mastodon = mastodon.clone();
         cosmic::iced::stream::channel(
             1,
             move |mut output: futures_channel::mpsc::Sender<Message>| async move {
                 use futures_util::SinkExt;
-                match mastodon.get_followed_tags().await {
+                match crate::client::within_timeout(
+                    mastodon.get_followed_tags(),
+                    crate::fl!("feed-load-error"),
+                )
+                .await
+                {
                     Ok(response) => {
-                        if let Err(err) = output.send(Message::SetFollowed(response.json)).await {
+                        if let Err(err) = output
+                            .send(Message::SetFollowed(request, response.json))
+                            .await
+                        {
                             tracing::warn!("failed to send followed tags: {}", err);
                         }
                     }
-                    Err(err) => tracing::warn!("failed to get followed tags: {}", err),
+                    Err(error) => {
+                        let _ = output.send(Message::Failed(request, error)).await;
+                    }
                 }
                 std::future::pending().await
             },

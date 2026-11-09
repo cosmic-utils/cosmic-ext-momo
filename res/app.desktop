@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=Toot
-Exec=cosmic-ext-toot %u
+Comment=Your corner of the fediverse
+Exec=cosmic-ext-toot
 Terminal=false
 Type=Application
 StartupNotify=true
 Icon=dev.edfloreshz.Toot
-Categories=COSMIC;
+Categories=Network;InstantMessaging;X-COSMIC;
 Keywords=toot;mastodon;fediverse;
-MimeType=x-scheme-handler/toot;

@@ -30,7 +30,6 @@ confirm-authorization-description = Copy the authorization code from the browser
 authorization-code = Authorization code
 
 ## Context
-about = About
 profile = Profile
 status = Status
 
@@ -278,3 +277,60 @@ media-mute = Mute
 media-unmute = Unmute
 
 compose-loading-edit = Loading your post for editing…
+
+## Beta recovery and storage
+session-expired = Your sign-in has expired. Sign in again to reconnect your account. Your drafts are kept.
+session-sign-in = Sign in again
+session-check = Retry account connection
+session-load-error = Could not check your account. Check your connection and try again in Settings.
+stream-reconnecting = Live updates are reconnecting. You can still read posts or refresh manually.
+settings-appearance = Appearance
+settings-theme = Theme
+settings-timeline = Timeline
+settings-post-display = Post display
+settings-hide-boosts = Hide boosts
+settings-hide-replies = Hide replies
+settings-accounts = Accounts
+settings-switch = Switch
+settings-remove = Remove
+settings-storage = Storage
+settings-cache-description = Clear saved feeds for this account and downloaded images for all accounts. Accounts, preferences, and drafts are kept. Open posts remain visible; refresh to download images again.
+settings-clear-cache = Clear cache
+settings-cache-confirm = Clear cached feeds and images from this device?
+settings-clearing-cache = Clearing cache…
+settings-cache-cleared = Cache cleared.
+settings-cache-error = Could not clear all cached files. Please try again.
+settings-theme-light = Light
+settings-theme-dark = Dark
+settings-theme-system = System
+settings-density-text = Text only
+settings-density-compact = Compact
+settings-density-full = Full
+select-page = Select a page
+
+## Profiles and discovery
+profile-followers = Followers
+profile-following = Following
+profile-posts = Posts
+action-unfollow = Unfollow
+action-follow = Follow
+action-unmute = Unmute
+action-mute = Mute
+action-unblock = Unblock
+action-block = Block
+tags-back = ← Back to hashtags
+tags-filter = Filter hashtags
+tags-followed = Followed hashtags
+search-users = Users
+search-back = ← Back to search
+search-placeholder = Search accounts, hashtags, statuses
+search-clear = Clear
+search-trending = Trending hashtags
+action-error = Could not complete this action. Check your connection and try again.
+search-error = Search could not be loaded. Check your connection and try again.
+media-open = Open in browser
+media-close = Close viewer
+media-previous = Previous attachment
+media-next = Next attachment
+media-view-profile = View profile
+media-open-attachment = Open attachment

@@ -5,15 +5,34 @@ use std::sync::Arc;
 use megalodon::Megalodon;
 
 /// Await a request for at most 30 seconds, mapping a timeout or failure to `error`.
-pub async fn within_timeout<T, E>(
-    request: impl std::future::Future<Output = Result<T, E>>,
+pub async fn within_timeout<T>(
+    request: impl std::future::Future<Output = Result<T, megalodon::error::Error>>,
     error: String,
 ) -> Result<T, String> {
-    tokio::time::timeout(std::time::Duration::from_secs(30), request)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .ok_or(error)
+    match tokio::time::timeout(std::time::Duration::from_secs(30), request).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(failure)) => Err(api_error(&failure, error)),
+        Err(_) => Err(error),
+    }
+}
+
+pub fn unauthorized(error: &megalodon::error::Error) -> bool {
+    match error {
+        megalodon::error::Error::OwnError(error) => error.status == Some(401),
+        megalodon::error::Error::RequestError(error) => {
+            error.status().is_some_and(|status| status.as_u16() == 401)
+        }
+        _ => false,
+    }
+}
+
+/// Never expose raw errors: they may contain a URL, a token, or server HTML.
+pub fn api_error(error: &megalodon::error::Error, fallback: String) -> String {
+    if unauthorized(error) {
+        crate::fl!("session-expired")
+    } else {
+        fallback
+    }
 }
 
 /// Wraps a megalodon client together with the connection details we need to
@@ -236,6 +255,23 @@ mod tests {
             acct: id.into(),
             preferences: None,
         }
+    }
+    #[test]
+    fn credential_failures_are_distinct_from_permission_or_network_errors() {
+        let error = |status| {
+            megalodon::error::Error::new_own(
+                "secret server response".into(),
+                megalodon::error::Kind::HTTPStatusError,
+                Some("https://example.org?access_token=secret".into()),
+                Some(status),
+                None,
+            )
+        };
+        assert!(unauthorized(&error(401)));
+        assert!(!unauthorized(&error(403)));
+        assert!(!unauthorized(&error(500)));
+        assert!(!api_error(&error(401), "fallback".into()).contains("secret"));
+        assert_eq!(api_error(&error(403), "fallback".into()), "fallback");
     }
     #[test]
     fn same_server_accounts_remain_distinct() {

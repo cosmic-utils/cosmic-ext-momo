@@ -55,6 +55,7 @@ pub enum Message {
     PrependNotification(Notification),
     Status(status::Message),
     Refresh,
+    Recover,
     Retry,
     LoadMore,
     PageLoaded(u64, Result<fetch::Page, String>),
@@ -369,6 +370,7 @@ impl Notifications {
             Message::Refresh if !self.loading && !self.clearing => {
                 self.start_load(LoadKind::Refresh)
             }
+            Message::Recover if !self.clearing => self.start_load(LoadKind::Refresh),
             Message::Retry if self.confirm_clear && !self.clearing => {
                 return self.update(Message::ClearAll);
             }
@@ -397,8 +399,10 @@ impl Notifications {
                                 ids,
                             )));
                         } else if !keep_cursor {
+                            self.more = page.more
+                                && (self.load_kind != LoadKind::Older
+                                    || page.cursor != self.max_id);
                             self.max_id = page.cursor;
-                            self.more = page.more;
                         }
                         for notification in page.notifications {
                             if self.dismissed.contains(&notification.id) {

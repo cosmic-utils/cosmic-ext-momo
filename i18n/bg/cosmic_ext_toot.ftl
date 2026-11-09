@@ -30,7 +30,6 @@ confirm-authorization-description = Копирайте кода за упълн�
 authorization-code = Код за упълномощаване
 
 ## Context
-about = Относно
 profile = Регистрация
 status = Състояние
 

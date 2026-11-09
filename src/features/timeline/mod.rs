@@ -85,6 +85,7 @@ pub struct Timeline {
 pub enum Message {
     SetClient(Client),
     Refresh,
+    Recover,
     Retry,
     PublishNew,
     IncomingStatus(Status),
@@ -304,6 +305,7 @@ impl Timeline {
         match message {
             Message::SetClient(mastodon) => self.mastodon = mastodon,
             Message::Refresh if !self.loading => self.begin_load(false),
+            Message::Recover => self.begin_load(false),
             Message::Retry if !self.loading => self.begin_load(self.older),
             Message::LoadMore if !self.loading && self.more => self.begin_load(true),
             Message::PublishNew => {

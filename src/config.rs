@@ -38,11 +38,11 @@ pub enum ThemeMode {
 impl ThemeMode {
     pub const ALL: [ThemeMode; 3] = [ThemeMode::Light, ThemeMode::Dark, ThemeMode::System];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            ThemeMode::Light => "Light",
-            ThemeMode::Dark => "Dark",
-            ThemeMode::System => "System",
+            ThemeMode::Light => crate::fl!("settings-theme-light"),
+            ThemeMode::Dark => crate::fl!("settings-theme-dark"),
+            ThemeMode::System => crate::fl!("settings-theme-system"),
         }
     }
 
@@ -74,11 +74,11 @@ impl FeedDensity {
         FeedDensity::Full,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            FeedDensity::TextOnly => "Text only",
-            FeedDensity::Compact => "Compact",
-            FeedDensity::Full => "Full",
+            FeedDensity::TextOnly => crate::fl!("settings-density-text"),
+            FeedDensity::Compact => crate::fl!("settings-density-compact"),
+            FeedDensity::Full => crate::fl!("settings-density-full"),
         }
     }
 }

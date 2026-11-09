@@ -118,6 +118,10 @@ impl Page {
 }
 
 pub struct AppModel {
+    stream_state: crate::streaming::State,
+    session_expired: bool,
+    confirm_clear_cache: bool,
+    clearing_cache: bool,
     generation: u64,
     video: Option<crate::media::Player>,
     video_url: Option<String>,
@@ -178,6 +182,10 @@ pub struct AppModel {
 #[derive(Debug, Clone)]
 pub enum Message {
     Scoped(u64, Box<Message>),
+    StreamState(crate::streaming::State),
+    SessionExpired,
+    CacheCleared(Result<(), String>),
+    StatusUpdated(Status),
     BackContext,
     RetryReader,
     ProfileMore,
@@ -217,10 +225,10 @@ pub enum Message {
     RemoveNotifications(Vec<String>),
     CacheRelationship(megalodon::entities::Relationship),
     CacheRelationships(Vec<megalodon::entities::Relationship>),
-    CacheHandle(String, Handle),
+    CacheHandle(u64, String, Handle),
     /// An image download failed; drop it from the in-flight set and let the
     /// next queued one start.
-    ImageFetchFailed(String),
+    ImageFetchFailed(u64, String),
     Dialog(DialogAction),
     EditorAction(widget::text_editor::Action),
     UpdateMastodonInstance,
@@ -363,6 +371,10 @@ impl Application for AppModel {
             video: None,
             video_url: None,
             video_failed: false,
+            stream_state: crate::streaming::State::Connecting,
+            session_expired: false,
+            confirm_clear_cache: false,
+            clearing_cache: false,
             reader_request: 0,
             filter_request: 0,
             filters_loading: false,
@@ -617,9 +629,14 @@ impl Application for AppModel {
             )
             .title(self.context_page.title()),
             ContextPage::Settings => {
-                let content =
-                    settings::view(&self.config, &self.sessions.sessions, self.sessions.active)
-                        .map(Message::Settings);
+                let content = settings::view(
+                    &self.config,
+                    &self.sessions.sessions,
+                    self.sessions.active,
+                    self.confirm_clear_cache,
+                    self.clearing_cache,
+                )
+                .map(Message::Settings);
                 context_drawer::context_drawer(content, Message::ToggleContextDrawer)
                     .title(self.context_page.title())
             }
@@ -861,7 +878,7 @@ impl Application for AppModel {
                 Page::Lists => self.lists.view(&self.cache).map(Message::Lists),
                 Page::Search => self.search.view(&self.cache).map(Message::Search),
             },
-            None => widget::text("Select a page").into(),
+            None => widget::text(fl!("select-page")).into(),
         }
         .apply(widget::container)
         .width(Length::Fill)
@@ -869,7 +886,24 @@ impl Application for AppModel {
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center);
 
-        widget::toaster(&self.toasts, content)
+        let mut body = widget::column![].spacing(8);
+        if self.session_expired {
+            body = body.push(
+                widget::column![
+                    widget::text(fl!("session-expired")),
+                    widget::button::suggested(fl!("session-sign-in"))
+                        .on_press(Message::StartOnboarding)
+                ]
+                .spacing(12)
+                .padding(12),
+            );
+        } else if self.mastodon.is_authenticated()
+            && self.stream_state == crate::streaming::State::Reconnecting
+        {
+            body = body.push(widget::text::caption(fl!("stream-reconnecting")));
+        }
+        body = body.push(content);
+        widget::toaster(&self.toasts, body)
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -990,7 +1024,9 @@ impl Application for AppModel {
                 cosmic::iced::time::every(std::time::Duration::from_secs(60))
                     .map(|_| Message::ReloadFilters),
             );
-            subscriptions.push(crate::streaming::stream_user_events(self.mastodon.clone()));
+            if !self.session_expired {
+                subscriptions.push(crate::streaming::stream_user_events(self.mastodon.clone()));
+            }
         }
 
         subscriptions.push(
@@ -1024,6 +1060,47 @@ impl Application for AppModel {
                     return Task::none();
                 }
                 return self.update(*message);
+            }
+            Message::SessionExpired => self.session_expired = true,
+            Message::StreamState(state) => {
+                let previous = self.stream_state;
+                self.stream_state = state;
+                if state == crate::streaming::State::Unauthorized {
+                    tasks.push(self.update(Message::SessionExpired));
+                } else if state == crate::streaming::State::Connected
+                    && previous == crate::streaming::State::Reconnecting
+                {
+                    tasks.push(self.home.update(timeline::Message::Recover));
+                    tasks.push(self.notifications.update(notifications::Message::Recover));
+                    tasks.push(self.reload_filters());
+                }
+            }
+            Message::CacheCleared(result) => {
+                self.clearing_cache = false;
+                self.confirm_clear_cache = false;
+                self.cache.handles.clear();
+                self.image_queue.clear();
+                self.image_inflight.clear();
+                self.cache.dirty = false;
+                tasks.push(self.update(Message::Error(match result {
+                    Ok(()) => fl!("settings-cache-cleared"),
+                    Err(error) => error,
+                })));
+            }
+            Message::StatusUpdated(status) => {
+                if !self.cache.deleted.contains(&status.id) {
+                    // An edit can change content warnings, media sensitivity, and filter matches.
+                    self.cache.reading.warnings.remove(&status.id);
+                    self.cache.reading.media.remove(&status.id);
+                    self.cache
+                        .reading
+                        .filter_reveals
+                        .retain(|(id, _)| id != &status.id);
+                    tasks.push(
+                        self.update(Message::Fetch(crate::cache::extract_status_images(&status))),
+                    );
+                    self.cache.insert_status(status);
+                }
             }
             Message::BackContext => {
                 if let Some(page) = self.context_history.pop() {
@@ -1282,6 +1359,31 @@ impl Application for AppModel {
                 settings::Message::SwitchAccount(index) => tasks.push(self.switch_account(index)),
                 settings::Message::RemoveAccount(index) => tasks.push(self.remove_account(index)),
                 settings::Message::AddAccount => tasks.push(self.update(Message::StartOnboarding)),
+                settings::Message::VerifySession => {
+                    self.session_expired = false;
+                    tasks.push(fetch_session_info(self.mastodon.clone()));
+                }
+                settings::Message::ConfirmClearCache => self.confirm_clear_cache = true,
+                settings::Message::CancelClearCache if !self.clearing_cache => {
+                    self.confirm_clear_cache = false
+                }
+                settings::Message::ClearCache
+                    if self.confirm_clear_cache && !self.clearing_cache =>
+                {
+                    self.clearing_cache = true;
+                    let account = self.mastodon.cache_key();
+                    tasks.push(cosmic::task::future(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            crate::persistence::clear_cached_content(&account)
+                        })
+                        .await;
+                        Message::CacheCleared(match result {
+                            Ok(Ok(())) => Ok(()),
+                            _ => Err(fl!("settings-cache-error")),
+                        })
+                    }));
+                }
+                _ => (),
             },
             Message::Account(message) => match message {
                 accounts::Message::Follow(id, following) => {
@@ -1294,7 +1396,10 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update follow: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
@@ -1308,7 +1413,10 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update mute: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
@@ -1322,7 +1430,10 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update block: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
@@ -1473,7 +1584,10 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheStatus(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update favorite: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
@@ -1487,7 +1601,10 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheStatus(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update boost: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
@@ -1501,18 +1618,27 @@ impl Application for AppModel {
                         };
                         match result {
                             Ok(response) => Message::CacheStatus(response.json),
-                            Err(err) => Message::Error(format!("Couldn't update bookmark: {err}")),
+                            Err(err) => Message::Error(crate::client::api_error(
+                                &err,
+                                crate::fl!("action-error"),
+                            )),
                         }
                     }))
                 }
                 _ => tasks.push(status::update(message)),
             },
-            Message::CacheHandle(url, handle) => {
+            Message::CacheHandle(epoch, url, handle) => {
+                if epoch != crate::persistence::image_epoch() {
+                    return Task::none();
+                }
                 self.image_inflight.remove(&url);
                 self.cache.insert_handle(url, handle);
                 tasks.push(self.drain_image_queue());
             }
-            Message::ImageFetchFailed(url) => {
+            Message::ImageFetchFailed(epoch, url) => {
+                if epoch != crate::persistence::image_epoch() {
+                    return Task::none();
+                }
                 self.image_inflight.remove(&url);
                 tasks.push(self.drain_image_queue());
             }
@@ -1575,6 +1701,7 @@ impl Application for AppModel {
                 self.mastodon = Client::new(self.instance(), None);
             }
             Message::SetAccount(account) => {
+                self.session_expired = false;
                 // Migrate legacy sessions after credentials have been verified.
                 if let Some(session) = self.sessions.sessions.get_mut(self.sessions.active) {
                     if session.account_id.is_empty() {
@@ -1592,17 +1719,27 @@ impl Application for AppModel {
             }
             Message::Compose(message) => tasks.push(self.update_compose(message)),
             Message::StatusDeleted(id) => {
-                self.cache.statuses.remove(&id);
-                self.cache.dirty = true;
-                for feed in [
-                    &mut self.home,
-                    &mut self.explore,
-                    &mut self.local,
-                    &mut self.federated,
-                    &mut self.favorites,
-                    &mut self.bookmarks,
-                ] {
-                    tasks.push(feed.update(timeline::Message::DeleteStatus(id.clone())));
+                let deleted = self.cache.delete_status(&id);
+                for id in deleted {
+                    for feed in [
+                        &mut self.home,
+                        &mut self.explore,
+                        &mut self.local,
+                        &mut self.federated,
+                        &mut self.favorites,
+                        &mut self.bookmarks,
+                    ] {
+                        tasks.push(feed.update(timeline::Message::DeleteStatus(id.clone())));
+                    }
+                    tasks.push(self.hashtags.update(hashtags::Message::Timeline(
+                        timeline::Message::DeleteStatus(id.clone()),
+                    )));
+                    tasks.push(self.lists.update(lists::Message::Timeline(
+                        timeline::Message::DeleteStatus(id.clone()),
+                    )));
+                    tasks.push(self.search.update(search::Message::Timeline(
+                        timeline::Message::DeleteStatus(id),
+                    )));
                 }
             }
             Message::Open(url) => {
@@ -1629,9 +1766,10 @@ impl Application for AppModel {
                                         .next()
                                         .map(Message::CacheRelationship)
                                         .unwrap_or(Message::None),
-                                    Err(err) => {
-                                        Message::Error(format!("Couldn't load relationship: {err}"))
-                                    }
+                                    Err(err) => Message::Error(crate::client::api_error(
+                                        &err,
+                                        crate::fl!("action-error"),
+                                    )),
                                 }
                             }));
                         }
@@ -1719,9 +1857,10 @@ impl Application for AppModel {
                                 tasks.push(cosmic::task::future(async move {
                                     match mastodon.delete_status(id.clone()).await {
                                         Ok(_) => Message::StatusDeleted(id),
-                                        Err(err) => {
-                                            Message::Error(format!("Couldn't delete post: {err}"))
-                                        }
+                                        Err(err) => Message::Error(crate::client::api_error(
+                                            &err,
+                                            crate::fl!("action-error"),
+                                        )),
                                     }
                                 }));
                             }
@@ -2505,6 +2644,10 @@ impl AppModel {
         self.video_url = None;
         self.generation += 1;
         self.filters_loading = false;
+        self.stream_state = crate::streaming::State::Connecting;
+        self.session_expired = false;
+        self.confirm_clear_cache = false;
+        self.clearing_cache = false;
         self.filter_request += 1;
         self.thread = None;
         self.profile = None;
@@ -2554,18 +2697,26 @@ impl AppModel {
     /// first (i.e. whichever were requested earliest — newest posts, since
     /// they're rendered and their images requested before older ones).
     fn drain_image_queue(&mut self) -> Task<Message> {
+        if self.clearing_cache {
+            return Task::none();
+        }
         let mut tasks = vec![];
         while self.image_inflight.len() < MAX_CONCURRENT_IMAGE_FETCHES {
             let Some(url) = self.image_queue.pop_front() else {
                 break;
             };
             self.image_inflight.insert(url.clone());
+            let epoch = crate::persistence::image_epoch();
             tasks.push(cosmic::task::future(async move {
-                match crate::cache::get(&url).await {
-                    Ok(handle) => Message::CacheHandle(url, handle),
+                let result = crate::cache::get(&url, epoch).await;
+                if epoch != crate::persistence::image_epoch() {
+                    return Message::ImageFetchFailed(epoch, url);
+                }
+                match result {
+                    Ok(handle) => Message::CacheHandle(epoch, url, handle),
                     Err(err) => {
                         tracing::error!("Failed to fetch image: {}", err);
-                        Message::ImageFetchFailed(url)
+                        Message::ImageFetchFailed(epoch, url)
                     }
                 }
             }));
@@ -2576,7 +2727,7 @@ impl AppModel {
     /// Save every feed's cached content to disk, if anything changed since
     /// the last flush.
     fn flush_cache_to_disk(&mut self) {
-        if !self.cache.dirty {
+        if !self.cache.dirty || self.clearing_cache {
             return;
         }
         self.home.save_cached(&self.cache);
@@ -2796,12 +2947,16 @@ impl AppModel {
 
         let header_row = widget::row![
             widget::space::horizontal(),
-            widget::button::icon(widget::icon::from_name("send-to-symbolic"))
-                .class(cosmic::style::Button::Standard)
-                .on_press(Message::Open(original_url.clone())),
-            widget::button::icon(widget::icon::from_name("window-close-symbolic"))
-                .class(cosmic::style::Button::Standard)
-                .on_press(Message::Dialog(DialogAction::Close)),
+            crate::ui::icon_action(
+                "send-to-symbolic",
+                fl!("media-open"),
+                Some(Message::Open(original_url.clone()))
+            ),
+            crate::ui::icon_action(
+                "window-close-symbolic",
+                fl!("media-close"),
+                Some(Message::Dialog(DialogAction::Close))
+            ),
         ]
         .align_y(cosmic::iced::Alignment::Center)
         .spacing(spacing.space_xs)
@@ -2817,32 +2972,32 @@ impl AppModel {
             .align_y(cosmic::iced::Alignment::Center);
         if let Some(video) = &self.video {
             controls = controls
-                .push(
-                    widget::button::icon(widget::icon::from_name(if video.paused {
+                .push(crate::ui::icon_action(
+                    if video.paused {
                         "media-playback-start-symbolic"
                     } else {
                         "media-playback-pause-symbolic"
-                    }))
-                    .tooltip(if video.paused {
+                    },
+                    if video.paused {
                         fl!("media-play")
                     } else {
                         fl!("media-pause")
-                    })
-                    .on_press_maybe((!video.error).then_some(Message::VideoPause)),
-                )
-                .push(
-                    widget::button::icon(widget::icon::from_name(if video.muted {
+                    },
+                    (!video.error).then_some(Message::VideoPause),
+                ))
+                .push(crate::ui::icon_action(
+                    if video.muted {
                         "audio-volume-muted-symbolic"
                     } else {
                         "audio-volume-high-symbolic"
-                    }))
-                    .tooltip(if video.muted {
+                    },
+                    if video.muted {
                         fl!("media-unmute")
                     } else {
                         fl!("media-mute")
-                    })
-                    .on_press_maybe((!video.error).then_some(Message::VideoMute)),
-                );
+                    },
+                    (!video.error).then_some(Message::VideoMute),
+                ));
             if video.duration > 0.0 && !video.error {
                 controls = controls
                     .push(
@@ -2866,15 +3021,17 @@ impl AppModel {
             widget::column![
                 controls,
                 widget::row![
-                    widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
-                        .class(cosmic::style::Button::Standard)
-                        .on_press_maybe((index > 0).then_some(Message::NavigateMedia(false))),
+                    crate::ui::icon_action(
+                        "go-previous-symbolic",
+                        fl!("media-previous"),
+                        (index > 0).then_some(Message::NavigateMedia(false))
+                    ),
                     widget::text(format!("{} / {}", index + 1, images.len())),
-                    widget::button::icon(widget::icon::from_name("go-next-symbolic"))
-                        .class(cosmic::style::Button::Standard)
-                        .on_press_maybe(
-                            (index + 1 < images.len()).then_some(Message::NavigateMedia(true))
-                        ),
+                    crate::ui::icon_action(
+                        "go-next-symbolic",
+                        fl!("media-next"),
+                        (index + 1 < images.len()).then_some(Message::NavigateMedia(true))
+                    ),
                 ]
                 .spacing(spacing.space_s)
                 .align_y(cosmic::iced::Alignment::Center),
@@ -3005,9 +3162,15 @@ fn fetch_session_info(mastodon: Client) -> Task<Message> {
     let instance_client = mastodon;
     Task::batch(vec![
         cosmic::task::future(async move {
-            match account_client.verify_account_credentials().await {
-                Ok(response) => Message::SetAccount(response.json),
-                Err(err) => Message::Error(format!("Couldn't load account: {err}")),
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                account_client.verify_account_credentials(),
+            )
+            .await
+            {
+                Ok(Ok(response)) => Message::SetAccount(response.json),
+                Ok(Err(error)) if crate::client::unauthorized(&error) => Message::SessionExpired,
+                _ => Message::Error(fl!("session-load-error")),
             }
         }),
         cosmic::task::future(async move {
@@ -3079,7 +3242,7 @@ impl ContextPage {
             ContextPage::About => fl!("about"),
             ContextPage::Account(_) => fl!("profile"),
             ContextPage::Status(_) => fl!("status"),
-            ContextPage::Settings => "Settings".to_string(),
+            ContextPage::Settings => fl!("feed-settings"),
         }
     }
 }

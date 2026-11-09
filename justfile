@@ -6,7 +6,8 @@ prefix := '/usr'
 
 base-dir := absolute_path(clean(rootdir / prefix))
 
-bin-src := 'target' / 'release' / name
+profile := 'release'
+bin-src := 'target' / profile / name
 bin-dst := base-dir / 'bin' / name
 
 desktop := appid + '.desktop'
@@ -59,10 +60,11 @@ install:
     install -Dm0755 {{bin-src}} {{bin-dst}}
     install -Dm0644 res/app.desktop {{desktop-dst}}
     install -Dm0644 {{icon-svg-src}} {{icon-svg-dst}}
+    install -Dm0644 res/{{appid}}.metainfo.xml {{base-dir}}/share/metainfo/{{appid}}.metainfo.xml
 
 # Uninstalls installed files
 uninstall:
-    rm {{bin-dst}} {{desktop-dst}} {{icon-svg-dst}}
+    rm {{bin-dst}} {{desktop-dst}} {{icon-svg-dst}} {{base-dir}}/share/metainfo/{{appid}}.metainfo.xml
 
 # Vendor dependencies locally
 vendor:
@@ -88,3 +90,13 @@ vendor:
 vendor-extract:
     rm -rf vendor
     tar pxf vendor.tar
+
+# Check translations and desktop integration without building the application.
+check-resources:
+    python3 scripts/check_resources.py
+    desktop-file-validate res/app.desktop
+    appstreamcli validate --no-net res/{{appid}}.metainfo.xml
+
+# Stage the release binary and desktop resources in a relocatable directory.
+stage destination:
+    just rootdir={{destination}} prefix=/usr install
