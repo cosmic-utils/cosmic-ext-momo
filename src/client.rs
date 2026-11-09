@@ -159,6 +159,23 @@ impl Sessions {
     }
 }
 
+impl Session {
+    pub fn label(&self) -> String {
+        let host = reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        let acct = if self.acct.contains('@') {
+            self.acct.clone()
+        } else if self.acct.is_empty() {
+            self.account_id.clone()
+        } else {
+            format!("{}@{}", self.acct, host)
+        };
+        format!("@{} · {}", acct, self.base_url)
+    }
+}
+
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
@@ -208,5 +225,20 @@ mod tests {
             Sessions::parse(r#"{"base_url":"https://example.org","token":"secret"}"#).unwrap();
         assert!(sessions.active_session().unwrap().account_id.is_empty());
         assert!(!format!("{sessions:?}").contains("secret"));
+    }
+    #[test]
+    fn saved_preferences_from_before_onboarding_are_compatible() {
+        let preferences: crate::config::TootConfig = serde_json::from_value(serde_json::json!({
+            "server": "example.org", "hide_boosts": true, "hide_replies": false,
+            "feed_density": "Compact", "theme_mode": "Dark"
+        }))
+        .unwrap();
+        assert!(!preferences.onboarding_completed);
+        assert!(preferences.hide_boosts);
+        let mut first = session("1");
+        first.acct = "alice".into();
+        assert_eq!(first.label(), "@alice@example.org · https://example.org");
+        first.acct = "alice@example.org".into();
+        assert_eq!(first.label(), "@alice@example.org · https://example.org");
     }
 }

@@ -7,7 +7,7 @@ use crate::features::compose;
 use crate::features::status::StatusOptions;
 use crate::features::timeline::{Timeline, TimelineKind};
 use crate::features::{
-    accounts, hashtags, lists, notifications, search, settings, status, timeline,
+    accounts, hashtags, lists, notifications, onboarding, search, settings, status, timeline,
 };
 use crate::fl;
 use cosmic::app::{context_drawer, Core, Task};
@@ -22,7 +22,6 @@ use cosmic::widget::{self, menu, nav_bar};
 use cosmic::{Application, ApplicationExt, Apply, Element};
 use megalodon::entities::{Account, Notification, Status};
 use megalodon::megalodon::PostStatusInputOptions;
-use megalodon::oauth::AppData;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -124,8 +123,9 @@ pub struct AppModel {
     config: TootConfig,
     handler: Option<cosmic_config::Config>,
     instance: String,
-    code: String,
-    registration: Option<AppData>,
+    onboarding: Option<onboarding::State>,
+    setup_serial: u64,
+    sessions_loaded: bool,
     mastodon: Client,
     /// All saved accounts (including the currently active one) and which
     /// index is active, persisted to the keychain as a whole.
@@ -157,16 +157,13 @@ pub struct AppModel {
 #[derive(Debug, Clone)]
 pub enum Message {
     Scoped(u64, Box<Message>),
-    VerifiedLogin(Client, Account),
+    StartOnboarding,
+    Onboarding(onboarding::Message),
     Open(String),
     ToggleContextPage(ContextPage),
     ToggleContextDrawer,
     UpdateConfig(TootConfig),
     InstanceEdit,
-    RegisterMastodonClient,
-    CompleteRegistration,
-    StoreMastodonData(Client),
-    StoreRegistration(Option<AppData>),
     Home(timeline::Message),
     Notifications(notifications::Message),
     Explore(timeline::Message),
@@ -221,8 +218,6 @@ pub enum DialogAction {
 pub enum Dialog {
     Compose(compose::State),
     SwitchInstance(String),
-    Login(String),
-    Code(String),
     Logout,
     DeleteStatus(String),
     /// Show an image attachment full-size: (cached preview URL, original URL).
@@ -253,15 +248,20 @@ impl Application for AppModel {
 
         let instance = instance(flags.config.server.clone());
 
-        let sessions = match keytar::get_password(Self::APP_ID, "mastodon-data") {
-            Ok(data) if data.success => Sessions::parse(&data.password).unwrap_or_default(),
-            Ok(_) => Sessions::default(),
+        let (sessions, sessions_loaded) = match keytar::get_password(Self::APP_ID, "mastodon-data")
+        {
+            Ok(data) if data.success => match Sessions::parse(&data.password) {
+                Some(sessions) => (sessions, true),
+                None => (Sessions::default(), false),
+            },
+            Ok(_) => (Sessions::default(), true),
             Err(err) => {
                 tracing::error!("{err}");
-                Sessions::default()
+                (Sessions::default(), false)
             }
         };
 
+        let onboarding_completed = flags.config.onboarding_completed;
         let mut flags = flags;
         if let Some(preferences) = sessions
             .active_session()
@@ -269,6 +269,8 @@ impl Application for AppModel {
         {
             flags.config = preferences;
         }
+
+        flags.config.onboarding_completed = onboarding_completed;
 
         let mastodon = match sessions.active_session() {
             Some(session) => Client::from_session(session),
@@ -316,8 +318,17 @@ impl Application for AppModel {
             config: flags.config.clone(),
             handler: flags.handler,
             instance: flags.config.server,
-            code: String::new(),
-            registration: None,
+            onboarding: if sessions.sessions.is_empty() && !onboarding_completed {
+                let mut state = onboarding::State::new(1, true, instance.clone(), None);
+                if !sessions_loaded {
+                    state.error = Some(onboarding::Failure::Keychain);
+                }
+                Some(state)
+            } else {
+                None
+            },
+            setup_serial: 1,
+            sessions_loaded,
             mastodon: mastodon.clone(),
             sessions,
             cache: {
@@ -363,6 +374,9 @@ impl Application for AppModel {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
+        if self.onboarding.is_some() {
+            return vec![];
+        }
         let spacing = cosmic::theme::active().cosmic().spacing;
         let menu_bar = menu::bar(vec![menu::Tree::with_children(
             Into::<Element<Self::Message>>::into(menu::root(fl!("view"))),
@@ -390,25 +404,20 @@ impl Application for AppModel {
     }
 
     fn header_center(&self) -> Vec<Element<'_, Self::Message>> {
+        if self.onboarding.is_some() {
+            return vec![];
+        }
         vec![widget::text(self.instance.clone()).into()]
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
+        if self.onboarding.is_some() {
+            return vec![];
+        }
         if !self.mastodon.is_authenticated() {
-            vec![
-                // widget::icon::from_name("network-server-symbolic")
-                //     .apply(widget::button::icon)
-                //     .on_press(Message::Dialog(DialogAction::Open(Dialog::SwitchInstance(
-                //         self.instance.clone(),
-                //     ))))
-                //     .into(),
-                widget::icon::from_name("system-users-symbolic")
-                    .apply(widget::button::icon)
-                    .on_press(Message::Dialog(DialogAction::Open(Dialog::Login(
-                        self.instance.clone(),
-                    ))))
-                    .into(),
-            ]
+            vec![widget::button::standard(fl!("setup-add-account"))
+                .on_press(Message::StartOnboarding)
+                .into()]
         } else {
             vec![
                 widget::icon::from_name("list-add-symbolic")
@@ -426,7 +435,7 @@ impl Application for AppModel {
     }
 
     fn nav_model(&self) -> Option<&nav_bar::Model> {
-        Some(&self.nav)
+        self.onboarding.is_none().then_some(&self.nav)
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
@@ -482,7 +491,7 @@ impl Application for AppModel {
     }
 
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
-        if !self.core.window.show_context {
+        if self.onboarding.is_some() || !self.core.window.show_context {
             return None;
         }
 
@@ -512,6 +521,9 @@ impl Application for AppModel {
     }
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        if self.onboarding.is_some() {
+            return None;
+        }
         // The image viewer is a full-window overlay (like cosmic-files' gallery
         // view), not a small centered dialog box, so it's built and returned
         // before the `widget::dialog()`-based match below.
@@ -540,8 +552,6 @@ impl Application for AppModel {
                 )
             }
             Dialog::SwitchInstance(instance) => self.switch_instance(instance.clone()),
-            Dialog::Login(instance) => self.login(instance.clone()),
-            Dialog::Code(code) => self.code(code.clone()),
             Dialog::Logout => self.logout(),
             Dialog::DeleteStatus(id) => self.delete_status(id.clone()),
             Dialog::Image(..) => unreachable!("handled above"),
@@ -551,6 +561,9 @@ impl Application for AppModel {
     }
 
     fn on_escape(&mut self) -> Task<Self::Message> {
+        if self.onboarding.is_some() {
+            return Task::none();
+        }
         if self.dialog_pages.pop_front().is_some() {
             return Task::none();
         }
@@ -575,6 +588,18 @@ impl Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        if let Some(state) = &self.onboarding {
+            return widget::toaster(
+                &self.toasts,
+                widget::container(
+                    state
+                        .view(&self.sessions.sessions, &self.cache)
+                        .map(Message::Onboarding),
+                )
+                .center_x(Length::Fill)
+                .height(Length::Fill),
+            );
+        }
         let content = match self.nav.active_data::<Page>() {
             Some(page) => match page {
                 Page::Home => self.home.view(&self.cache).map(Message::Home),
@@ -607,6 +632,10 @@ impl Application for AppModel {
             .core()
             .watch_config::<TootConfig>(Self::APP_ID)
             .map(|update| Message::UpdateConfig(update.config))];
+
+        if self.onboarding.is_some() {
+            return Subscription::batch(subscriptions);
+        }
 
         match self.nav.active_data::<Page>() {
             Some(Page::Home) => subscriptions.push(self.home.subscription().map(Message::Home)),
@@ -731,13 +760,7 @@ impl Application for AppModel {
                 }
                 settings::Message::SwitchAccount(index) => tasks.push(self.switch_account(index)),
                 settings::Message::RemoveAccount(index) => tasks.push(self.remove_account(index)),
-                settings::Message::AddAccount => {
-                    tasks.push(
-                        self.update(Message::Dialog(DialogAction::Open(Dialog::Login(
-                            self.instance.clone(),
-                        )))),
-                    );
-                }
+                settings::Message::AddAccount => tasks.push(self.update(Message::StartOnboarding)),
             },
             Message::Account(message) => match message {
                 accounts::Message::Follow(id, following) => {
@@ -871,88 +894,22 @@ impl Application for AppModel {
                     }
                 }
             }
-            Message::RegisterMastodonClient => {
-                let instance = self.instance();
-                tasks.push(cosmic::task::future(async move {
-                    let client = Client::new(instance, None);
-                    let options = megalodon::megalodon::AppInputOptions {
-                        scopes: Some(
-                            ["read", "write", "follow"]
-                                .into_iter()
-                                .map(String::from)
-                                .collect(),
-                        ),
-                        ..Default::default()
-                    };
-                    match client.register_app("Toot".to_string(), &options).await {
-                        Ok(app_data) => Message::StoreRegistration(Some(app_data)),
-                        Err(err) => Message::Error(format!("Couldn't register with server: {err}")),
-                    }
-                }));
-            }
-            Message::StoreRegistration(registration) => {
-                if let Some(ref registration) = registration {
-                    if let Some(url) = registration.url.clone() {
-                        if let Err(err) = open::that_detached(url) {
-                            tracing::error!("{err}");
-                        }
-                    }
-                }
-                self.registration = registration;
-            }
-            Message::CompleteRegistration => {
-                if let Some(registration) = self.registration.take() {
-                    let code = self.code.clone();
-                    let instance = self.instance();
-                    let task = cosmic::task::future(async move {
-                        let client = Client::new(instance.clone(), None);
-                        match client
-                            .fetch_access_token(
-                                registration.client_id,
-                                registration.client_secret,
-                                code,
-                                megalodon::default::NO_REDIRECT.to_string(),
-                            )
-                            .await
-                        {
-                            Ok(token) => Message::StoreMastodonData(Client::new(
-                                instance,
-                                Some(token.access_token),
-                            )),
-                            Err(err) => Message::Error(format!("Couldn't complete login: {err}")),
-                        }
-                    });
-                    tasks.push(task);
+            Message::StartOnboarding => {
+                if self.onboarding.is_none() {
+                    self.setup_serial += 1;
+                    self.core.window.show_context = false;
+                    self.onboarding = Some(onboarding::State::new(
+                        self.setup_serial,
+                        false,
+                        self.mastodon.base_url.clone(),
+                        self.sessions.active_session().map(|_| self.sessions.active),
+                    ));
                 }
             }
-            Message::StoreMastodonData(mastodon) => {
-                tasks.push(cosmic::task::future(async move {
-                    match mastodon.verify_account_credentials().await {
-                        Ok(response) => Message::VerifiedLogin(mastodon, response.json),
-                        Err(err) => Message::Error(format!("Couldn't verify account: {err}")),
-                    }
-                }));
-            }
-            Message::VerifiedLogin(mut mastodon, account) => {
-                mastodon.account_id = account.id.clone();
-                let previous = self.sessions.clone();
-                self.sessions.upsert_active(Session {
-                    base_url: mastodon.base_url.clone(),
-                    token: mastodon.token.clone().unwrap_or_default(),
-                    account_id: account.id.clone(),
-                    acct: account.acct.clone(),
-                    preferences: None,
-                });
-                match self.persist_sessions() {
-                    Ok(()) => {
-                        tasks.push(self.switch_account(self.sessions.active));
-                    }
-                    Err(err) => {
-                        self.sessions = previous;
-                        tasks.push(cosmic::task::message(Message::Error(format!(
-                            "Couldn't save account: {err}"
-                        ))));
-                    }
+            Message::Onboarding(message) => {
+                if let Some(state) = &mut self.onboarding {
+                    let effect = state.update(message);
+                    tasks.push(self.apply_onboarding_effect(effect));
                 }
             }
             Message::UpdateMastodonInstance => {
@@ -1072,18 +1029,6 @@ impl Application for AppModel {
                                 tasks.push(self.update(Message::InstanceEdit));
                                 tasks.push(self.update(Message::UpdateMastodonInstance))
                             }
-                            Dialog::Login(instance) => {
-                                self.instance = instance;
-                                tasks.push(self.update(Message::InstanceEdit));
-                                tasks.push(self.update(Message::RegisterMastodonClient));
-                                tasks.push(self.update(Message::Dialog(DialogAction::Open(
-                                    Dialog::Code(String::new()),
-                                ))))
-                            }
-                            Dialog::Code(code) => {
-                                self.code = code;
-                                tasks.push(self.update(Message::CompleteRegistration))
-                            }
                             Dialog::Logout => {
                                 tasks.push(self.remove_account(self.sessions.active));
                             }
@@ -1117,6 +1062,111 @@ impl Application for AppModel {
 }
 
 impl AppModel {
+    fn apply_onboarding_effect(&mut self, effect: onboarding::Effect) -> Task<Message> {
+        use onboarding::{Effect, Failure};
+        match effect {
+            Effect::None => Task::none(),
+            Effect::Register(request, server) => cosmic::task::future(async move {
+                Message::Onboarding(onboarding::register(request, server).await)
+            }),
+            Effect::Exchange(request, server, registration, code) => {
+                cosmic::task::future(async move {
+                    Message::Onboarding(
+                        onboarding::exchange(request, server, registration, code).await,
+                    )
+                })
+            }
+            Effect::Verify(request, client) => cosmic::task::future(async move {
+                Message::Onboarding(onboarding::verify(request, client).await)
+            }),
+            Effect::OpenBrowser(url) => {
+                if open::that_detached(url).is_err() {
+                    cosmic::task::message(Message::Onboarding(onboarding::Message::BrowserFailed))
+                } else {
+                    Task::none()
+                }
+            }
+            Effect::Save(request, mut client, account) => {
+                client.account_id = account.id.clone();
+                let result = self.save_setup_account(&client, &account);
+                let mut tasks = vec![cosmic::task::message(Message::Onboarding(
+                    onboarding::Message::Saved(request, result),
+                ))];
+                if result.is_ok() {
+                    tasks.push(cosmic::task::message(Message::Fetch(vec![account.avatar])));
+                }
+                Task::batch(tasks)
+            }
+            Effect::Finish(selected) => {
+                // Persist before dismissing setup, so guest browsing survives restart.
+                let saved = self.handler.as_ref().is_some_and(|handler| {
+                    self.config.set_onboarding_completed(handler, true).is_ok()
+                });
+                if !saved {
+                    if let Some(state) = &mut self.onboarding {
+                        state.error = Some(Failure::Preferences);
+                    }
+                    return Task::none();
+                }
+                self.config.onboarding_completed = true;
+                self.onboarding = None;
+                match selected {
+                    Some(index) => self.switch_account(index),
+                    None => self.update_title(),
+                }
+            }
+            Effect::Close => {
+                self.onboarding = None;
+                self.update_title()
+            }
+        }
+    }
+
+    fn save_setup_account(
+        &mut self,
+        client: &Client,
+        account: &Account,
+    ) -> Result<usize, onboarding::Failure> {
+        use onboarding::Failure;
+        // If startup could not read the keychain, reload it before merging.
+        // Unlocking it must never replace an existing account list with an empty one.
+        let mut sessions = if self.sessions_loaded {
+            self.sessions.clone()
+        } else {
+            match keytar::get_password(Self::APP_ID, "mastodon-data") {
+                Ok(data) if data.success => {
+                    Sessions::parse(&data.password).ok_or(Failure::Keychain)?
+                }
+                Ok(_) => Sessions::default(),
+                Err(_) => return Err(Failure::Keychain),
+            }
+        };
+        let active = sessions.active;
+        let preferences = sessions
+            .sessions
+            .iter()
+            .find(|session| session.base_url == client.base_url && session.account_id == account.id)
+            .and_then(|session| session.preferences.clone());
+        sessions.upsert_active(Session {
+            base_url: client.base_url.clone(),
+            token: client.token.clone().unwrap_or_default(),
+            account_id: account.id.clone(),
+            acct: account.acct.clone(),
+            preferences,
+        });
+        let selected = sessions.active;
+        // Adding accounts does not change the client being used behind the wizard.
+        if self.mastodon.is_authenticated() {
+            sessions.active = active;
+        }
+        let data = serde_json::to_string(&sessions).map_err(|_| Failure::Keychain)?;
+        keytar::set_password(Self::APP_ID, "mastodon-data", &data)
+            .map_err(|_| Failure::Keychain)?;
+        self.sessions = sessions;
+        self.sessions_loaded = true;
+        Ok(selected)
+    }
+
     /// Persist the full account list (and which one is active) to the keychain.
     fn persist_sessions(&self) -> Result<(), String> {
         let data = serde_json::to_string(&self.sessions).map_err(|err| err.to_string())?;
@@ -1211,14 +1261,19 @@ impl AppModel {
             return Task::none();
         };
         self.flush_cache_to_disk();
-        if let Some(current) = self.sessions.sessions.get_mut(self.sessions.active) {
-            current.preferences = Some(self.config.clone());
+        if self.mastodon.is_authenticated() {
+            if let Some(current) = self.sessions.sessions.get_mut(self.sessions.active) {
+                current.preferences = Some(self.config.clone());
+            }
         }
         self.sessions.active = index;
+        let onboarding_completed = self.config.onboarding_completed;
         self.config = session.preferences.clone().unwrap_or_else(|| TootConfig {
             server: self.config.server.clone(),
             ..Default::default()
         });
+        self.config.onboarding_completed = onboarding_completed;
+        self.instance = session.base_url.clone();
         self.mastodon = Client::from_session(&session);
         self.cache.clear();
         self.cache.hide_boosts = self.config.hide_boosts;
@@ -1306,48 +1361,6 @@ impl AppModel {
                     .on_input(|instance| {
                         Message::Dialog(DialogAction::Update(Dialog::SwitchInstance(instance)))
                     })
-                    .on_submit(|_| Message::Dialog(DialogAction::Complete)),
-            )
-            .primary_action(
-                widget::button::suggested(fl!("confirm"))
-                    .on_press(Message::Dialog(DialogAction::Complete)),
-            )
-            .secondary_action(
-                widget::button::standard(fl!("cancel"))
-                    .on_press(Message::Dialog(DialogAction::Close)),
-            )
-    }
-
-    fn login(&self, instance: String) -> widget::Dialog<'_, Message> {
-        widget::dialog()
-            .title(fl!("server-question"))
-            .body(fl!("server-description"))
-            .icon(widget::icon::from_name("network-server-symbolic"))
-            .control(
-                widget::text_input(fl!("server-url"), instance.clone())
-                    .on_input(move |instance| {
-                        Message::Dialog(DialogAction::Update(Dialog::Login(instance.clone())))
-                    })
-                    .on_submit(|_| Message::Dialog(DialogAction::Complete)),
-            )
-            .primary_action(
-                widget::button::suggested(fl!("continue"))
-                    .on_press(Message::Dialog(DialogAction::Complete)),
-            )
-            .secondary_action(
-                widget::button::standard(fl!("cancel"))
-                    .on_press(Message::Dialog(DialogAction::Close)),
-            )
-    }
-
-    fn code(&self, code: String) -> widget::Dialog<'_, Message> {
-        widget::dialog()
-            .title(fl!("confirm-authorization"))
-            .body(fl!("confirm-authorization-description"))
-            .icon(widget::icon::from_name("network-server-symbolic"))
-            .control(
-                widget::text_input(fl!("authorization-code"), code.clone())
-                    .on_input(|code| Message::Dialog(DialogAction::Update(Dialog::Code(code))))
                     .on_submit(|_| Message::Dialog(DialogAction::Complete)),
             )
             .primary_action(
