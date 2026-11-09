@@ -35,7 +35,8 @@ pub enum Message {
     Report(Account, Option<String>),
     OpenAccount(Account),
     ExpandStatus(String),
-    Reply(String, String),
+    Reply(String),
+    Edit(String),
     Favorite(String, bool),
     Boost(String, bool),
     Bookmark(String, bool),
@@ -268,11 +269,11 @@ pub fn update(message: Message) -> Task<app::Message> {
         Message::ExpandStatus(id) => cosmic::task::message(app::Message::ToggleContextPage(
             app::ContextPage::Status(id),
         )),
-        Message::Reply(status_id, username) => {
-            let state = compose::State::reply(status_id, username);
-            cosmic::task::message(app::Message::Dialog(app::DialogAction::Open(
-                app::Dialog::Compose(state),
-            )))
+        Message::Reply(status_id) => {
+            cosmic::task::message(app::Message::Compose(compose::Message::Reply(status_id)))
+        }
+        Message::Edit(id) => {
+            cosmic::task::message(app::Message::Compose(compose::Message::Edit(id)))
         }
         Message::Favorite(status_id, favorited) => cosmic::task::message(app::Message::Status(
             Message::Favorite(status_id, favorited),
@@ -321,10 +322,10 @@ fn actions<'a>(
     };
     let buttons = widget::row![
         action("mail-replied-symbolic", status.replies_count, false).on_press_maybe(
-            cache.me.is_some().then_some(Message::Reply(
-                status.id.clone(),
-                status.account.acct.clone()
-            ))
+            cache
+                .me
+                .is_some()
+                .then_some(Message::Reply(status.id.clone()))
         ),
         action(
             "emblem-shared-symbolic",
@@ -375,6 +376,9 @@ fn actions<'a>(
                 ))
             }),
         )
+        .push_maybe(cache.is_me(&status.account.id).then(|| {
+            widget::button::standard(fl!("compose-edit")).on_press(Message::Edit(status.id.clone()))
+        }))
         .push_maybe(delete_button)
         .spacing(spacing.space_xs);
     Some(

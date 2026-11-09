@@ -249,6 +249,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "serde",
+ "serde_repr",
  "tokio",
  "wayland-backend",
  "wayland-client",
@@ -1056,6 +1057,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]

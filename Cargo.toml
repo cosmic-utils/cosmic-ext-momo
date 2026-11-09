@@ -14,6 +14,8 @@ keytar = "0.1.6"
 open = "5.4.5"
 reqwest = "0.13.5"
 regex = "1.13.1"
+unicode-segmentation = "1.13.3"
+uuid = { version = "1.29.2", features = ["v4"] }
 rust-embed = "8.13.0"
 thiserror = "2.0.21"
 tracing = "0.1.44"
@@ -21,7 +23,7 @@ megalodon = "1.3.0"
 
 [dependencies.tokio]
 version = "1.54.1"
-features = ["rt", "time"]
+features = ["rt", "time", "fs", "io-util"]
 
 [dependencies.serde]
 version = "1.0.229"
@@ -69,6 +71,7 @@ features = [
     "dbus-config",
     # Add Wayland support to winit
     "wayland",
+    "xdg-portal",
 ]
 
 # Uncomment to test a locally-cloned libcosmic
