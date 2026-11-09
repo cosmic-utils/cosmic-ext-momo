@@ -176,28 +176,26 @@ impl Timeline {
         }
     }
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {
-        let mut content = widget::column![widget::row![
+        let header = widget::row![
             widget::text::title2(self.title()),
             widget::space::horizontal(),
-            ui::icon_action(
-                "view-refresh-symbolic",
-                fl!("feed-refresh"),
-                (!self.loading).then_some(Message::Refresh)
-            ),
         ]
-        .align_y(cosmic::iced::Alignment::Center)]
-        .spacing(ui::GAP)
-        .width(Length::Fill);
-        if !self.incoming.is_empty() {
-            content = content.push(
-                widget::button::suggested(format!(
-                    "{} ({})",
-                    fl!("feed-show-new"),
-                    self.incoming.len()
-                ))
-                .on_press(Message::PublishNew),
-            );
-        }
+        .push_maybe((!self.incoming.is_empty()).then(|| {
+            widget::button::suggested(format!(
+                "{} ({})",
+                fl!("feed-show-new"),
+                self.incoming.len()
+            ))
+            .on_press(Message::PublishNew)
+        }))
+        .push(ui::refresh_action(
+            self.loading && !self.older,
+            fl!("feed-refresh"),
+            (!self.loading).then_some(Message::Refresh),
+        ))
+        .spacing(8)
+        .align_y(cosmic::iced::Alignment::Center);
+        let mut content = widget::column![header].spacing(ui::GAP).width(Length::Fill);
         if let Some(error) = &self.error {
             content = content.push(
                 widget::column![

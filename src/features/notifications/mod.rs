@@ -194,8 +194,8 @@ impl Notifications {
             widget::row![
                 widget::text::title2(fl!("notifications")),
                 widget::space::horizontal(),
-                ui::icon_action(
-                    "view-refresh-symbolic",
+                ui::refresh_action(
+                    refreshing,
                     fl!("activity-refresh"),
                     (!self.loading && !self.clearing).then_some(Message::Refresh)
                 ),
