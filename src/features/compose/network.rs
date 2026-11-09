@@ -21,6 +21,7 @@ pub enum SubmitError {
 pub struct Published {
     pub id: String,
     pub post: Option<Status>,
+    pub scheduled: bool,
 }
 
 pub async fn limits(client: Client) -> Result<Limits, String> {
@@ -135,8 +136,12 @@ pub async fn submit(client: Client, state: State) -> Result<Published, SubmitErr
         return Err(SubmitError::Uncertain);
     }
     let bytes = response.bytes().await.map_err(|_| SubmitError::Uncertain)?;
-    let mut value: serde_json::Value =
+    let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| SubmitError::Uncertain)?;
+    decode_published(value)
+}
+
+pub fn decode_published(mut value: serde_json::Value) -> Result<Published, SubmitError> {
     let id = value["id"]
         .as_str()
         .ok_or(SubmitError::Uncertain)?
@@ -149,8 +154,20 @@ pub async fn submit(client: Client, state: State) -> Result<Published, SubmitErr
             serde_json::to_value(megalodon::entities::QuoteApproval::default())
                 .map_err(|_| SubmitError::Uncertain)?;
     }
-    let post = serde_json::from_value(value).ok();
-    Ok(Published { id, post })
+    let scheduled = value
+        .get("scheduled_at")
+        .is_some_and(|time| !time.is_null())
+        && value.get("params").is_some();
+    let post = if scheduled {
+        None
+    } else {
+        serde_json::from_value(value).ok()
+    };
+    Ok(Published {
+        id,
+        post,
+        scheduled,
+    })
 }
 
 pub fn status_request(
@@ -158,6 +175,11 @@ pub fn status_request(
     client: &Client,
     state: &State,
 ) -> Result<reqwest::Request, SubmitError> {
+    if !state.schedule.trim().is_empty()
+        && (state.edit_id.is_some() || super::schedule_time(&state.schedule).is_none())
+    {
+        return Err(SubmitError::Rejected(fl!("schedule-invalid")));
+    }
     let mut url = reqwest::Url::parse(&client.base_url)
         .map_err(|_| SubmitError::Rejected(fl!("compose-post-error")))?;
     {

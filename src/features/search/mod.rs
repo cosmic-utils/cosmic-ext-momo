@@ -37,6 +37,9 @@ pub struct Search {
     query: String,
     results: Option<Results>,
     searching: bool,
+    offset: u64,
+    more: bool,
+    loading_more: bool,
     request: u64,
     error: Option<String>,
     trending_error: Option<String>,
@@ -55,6 +58,8 @@ pub enum Message {
     SetClient(Client),
     QueryChanged(String),
     Submit,
+    LoadMore,
+    Retry,
     /// Clear the query and any results, returning to the idle/trending view.
     Clear,
     SetResults(u64, Results),
@@ -96,6 +101,9 @@ impl Search {
             query: String::new(),
             results: None,
             searching: false,
+            offset: 0,
+            more: false,
+            loading_more: false,
             request: 0,
             error: None,
             trending_error: None,
@@ -152,7 +160,7 @@ impl Search {
         let error: Option<Element<'_, Message>> = self.error.as_ref().map(|error| {
             widget::column![
                 widget::text(error),
-                widget::button::standard(crate::fl!("reading-retry")).on_press(Message::Submit)
+                widget::button::standard(crate::fl!("reading-retry")).on_press(Message::Retry)
             ]
             .spacing(8)
             .into()
@@ -254,7 +262,10 @@ impl Search {
                     searching,
                     idle,
                     tabs,
-                    results_content
+                    results_content,
+                    (self.results.is_some() && self.more)
+                        .then(|| widget::button::standard(crate::fl!("reading-load-more"))
+                            .on_press_maybe((!self.searching).then_some(Message::LoadMore)))
                 ]
                 .spacing(spacing.space_s),
             )
@@ -283,35 +294,30 @@ impl Search {
                 self.searching = false;
                 self.error = None;
                 self.query = query;
+                self.results = None;
+                self.offset = 0;
+                self.more = false;
+                self.loading_more = false;
             }
             Message::Submit => {
-                let query = self.query.trim().to_string();
-                if !query.is_empty() {
-                    self.searching = true;
-                    self.error = None;
-                    self.request += 1;
-                    let request = self.request;
-                    let mastodon = self.mastodon.clone();
-                    return cosmic::task::future(async move {
-                        match crate::client::within_timeout(
-                            mastodon.search(query, Some(&SearchInputOptions::default())),
-                            crate::fl!("search-error"),
-                        )
-                        .await
-                        {
-                            Ok(response) => {
-                                app::Message::Search(Message::SetResults(request, response.json))
-                            }
-                            Err(err) => app::Message::Search(Message::SearchFailed(request, err)),
-                        }
-                    });
-                }
+                self.offset = 0;
+                self.loading_more = false;
+                return self.load();
             }
+            Message::LoadMore if !self.searching && self.more => {
+                self.loading_more = true;
+                return self.load();
+            }
+            Message::Retry if !self.searching => return self.load(),
+            Message::LoadMore | Message::Retry => (),
             Message::Clear => {
                 self.request += 1;
                 self.searching = false;
                 self.error = None;
                 self.query.clear();
+                self.offset = 0;
+                self.more = false;
+                self.loading_more = false;
                 self.results = None;
                 self.tag_timeline = None;
             }
@@ -340,7 +346,42 @@ impl Search {
                         .cloned()
                         .map(|status| cosmic::task::message(app::Message::CacheStatus(status))),
                 );
-                self.results = Some(results);
+                let count = match self.result_tabs.active_data::<ResultKind>() {
+                    Some(ResultKind::Accounts) => results.accounts.len(),
+                    Some(ResultKind::Hashtags) => results.hashtags.len(),
+                    _ => results.statuses.len(),
+                };
+                self.more = count == 20;
+                if self.loading_more {
+                    if let Some(existing) = &mut self.results {
+                        let previous = existing.accounts.len()
+                            + existing.hashtags.len()
+                            + existing.statuses.len();
+                        for account in results.accounts {
+                            if !existing.accounts.iter().any(|old| old.id == account.id) {
+                                existing.accounts.push(account);
+                            }
+                        }
+                        for tag in results.hashtags {
+                            if !existing.hashtags.iter().any(|old| old.name == tag.name) {
+                                existing.hashtags.push(tag);
+                            }
+                        }
+                        for post in results.statuses {
+                            if !existing.statuses.iter().any(|old| old.id == post.id) {
+                                existing.statuses.push(post);
+                            }
+                        }
+                        self.more &= previous
+                            < existing.accounts.len()
+                                + existing.hashtags.len()
+                                + existing.statuses.len();
+                    }
+                } else {
+                    self.results = Some(results);
+                }
+                self.offset += 20;
+                self.loading_more = false;
 
                 if !account_ids.is_empty() && self.mastodon.is_authenticated() {
                     let mastodon = self.mastodon.clone();
@@ -370,7 +411,11 @@ impl Search {
                 self.trending_loaded = false;
                 self.trending_request += 1;
             }
-            Message::SelectResultKind(entity) => self.result_tabs.activate(entity),
+            Message::SelectResultKind(entity) => {
+                self.result_tabs.activate(entity);
+                self.results = None;
+                return self.update(Message::Submit);
+            }
             Message::OpenAccount(account) => {
                 return cosmic::task::message(app::Message::ToggleContextPage(
                     app::ContextPage::Account(account),
@@ -435,6 +480,40 @@ impl Search {
             }
         }
         Task::none()
+    }
+
+    fn load(&mut self) -> Task<app::Message> {
+        let query = self.query.trim().to_string();
+        if query.is_empty() {
+            return Task::none();
+        }
+        self.searching = true;
+        self.error = None;
+        self.request += 1;
+        let request = self.request;
+        let client = self.mastodon.clone();
+        let options = SearchInputOptions {
+            r#type: Some(match self.result_tabs.active_data::<ResultKind>() {
+                Some(ResultKind::Hashtags) => megalodon::megalodon::SearchType::Hashtags,
+                Some(ResultKind::Statuses) => megalodon::megalodon::SearchType::Statuses,
+                _ => megalodon::megalodon::SearchType::Accounts,
+            }),
+            resolve: Some(client.is_authenticated()),
+            limit: Some(20),
+            offset: Some(self.offset),
+            ..Default::default()
+        };
+        cosmic::task::future(async move {
+            match crate::client::within_timeout(
+                client.search(query, Some(&options)),
+                crate::fl!("search-error"),
+            )
+            .await
+            {
+                Ok(response) => app::Message::Search(Message::SetResults(request, response.json)),
+                Err(error) => app::Message::Search(Message::SearchFailed(request, error)),
+            }
+        })
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -553,5 +632,41 @@ mod tests {
         assert_eq!(search.error.as_deref(), Some("offline"));
         let _ = search.update(Message::QueryChanged("second".into()));
         assert!(search.error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    fn page(ids: impl IntoIterator<Item = usize>) -> Results {
+        let accounts=ids.into_iter().map(|id|serde_json::json!({"id":id.to_string(),"username":"alice","acct":"alice","display_name":"Alice","locked":false,"created_at":"2020-01-01T00:00:00Z","followers_count":0,"following_count":0,"statuses_count":0,"note":"","url":"https://example.org/@alice","avatar":"","avatar_static":"","header":"","header_static":"","emojis":[],"fields":[],"bot":false})).collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({"accounts":accounts,"hashtags":[],"statuses":[]}))
+            .unwrap()
+    }
+    #[test]
+    fn paging_keeps_results_on_failure_retries_same_offset_and_deduplicates_overlap() {
+        let mut search = Search::new(Client::new("https://example.org".into(), None));
+        search.query = "alice".into();
+        let _ = search.update(Message::Submit);
+        let _ = search.update(Message::SetResults(search.request, page(0..20)));
+        assert!(search.more);
+        assert_eq!(search.offset, 20);
+        let _ = search.update(Message::LoadMore);
+        let failed = search.request;
+        let _ = search.update(Message::SearchFailed(failed, "offline".into()));
+        assert_eq!(search.offset, 20);
+        assert_eq!(search.results.as_ref().unwrap().accounts.len(), 20);
+        let _ = search.update(Message::Retry);
+        assert!(search.request > failed);
+        assert_eq!(search.offset, 20);
+        let _ = search.update(Message::SetResults(search.request, page([19, 20])));
+        assert_eq!(search.results.as_ref().unwrap().accounts.len(), 21);
+        assert!(!search.more);
+        let old = search.request;
+        let _ = search.update(Message::QueryChanged("bob".into()));
+        let _ = search.update(Message::SetResults(old, page(0..20)));
+        assert!(search.results.is_none());
+        assert_eq!(search.offset, 0);
+        assert!(!search.more);
     }
 }

@@ -9,12 +9,14 @@ use crate::fl;
 #[derive(Debug, Clone)]
 pub enum Message {
     ToggleHideBoosts(bool),
+    ToggleDesktopNotifications(bool),
     ToggleHideReplies(bool),
     SetFeedDensity(FeedDensity),
     SetThemeMode(ThemeMode),
     SwitchAccount(usize),
     RemoveAccount(usize),
     AddAccount,
+    Social(crate::features::social::Page),
     ConfirmClearCache,
     CancelClearCache,
     ClearCache,
@@ -71,6 +73,14 @@ pub fn view<'a>(
             widget::toggler(config.hide_replies).on_toggle(Message::ToggleHideReplies),
         ));
 
+    let notification_settings = widget::settings::section()
+        .title(fl!("notifications"))
+        .add(widget::settings::item(
+            fl!("desktop-alerts"),
+            widget::toggler(!config.disable_desktop_notifications)
+                .on_toggle(Message::ToggleDesktopNotifications),
+        ))
+        .add(widget::text(fl!("desktop-alerts-help")));
     let accounts_section = sessions
         .iter()
         .enumerate()
@@ -125,8 +135,20 @@ pub fn view<'a>(
             .on_press_maybe((!sessions.is_empty()).then_some(Message::VerifySession)),
     );
 
+    let social = widget::column![
+        widget::button::standard(fl!("profile-edit"))
+            .on_press(Message::Social(crate::features::social::Page::EditProfile)),
+        widget::button::standard(fl!("private-conversations")).on_press(Message::Social(
+            crate::features::social::Page::Conversations
+        )),
+        widget::button::standard(fl!("scheduled-posts"))
+            .on_press(Message::Social(crate::features::social::Page::Scheduled)),
+    ]
+    .spacing(8);
     widget::column![
+        (!sessions.is_empty()).then_some(social),
         appearance_settings,
+        notification_settings,
         timeline_settings,
         accounts_section,
         cache_section

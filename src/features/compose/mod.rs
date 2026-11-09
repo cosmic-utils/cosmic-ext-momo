@@ -1,4 +1,5 @@
 //! Account-scoped, recoverable posting and editing.
+pub mod completion;
 pub mod count;
 pub mod network;
 pub mod store;
@@ -16,6 +17,10 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct Limits {
+    pub poll_options: usize,
+    pub poll_characters: usize,
+    pub poll_min: u64,
+    pub poll_max: u64,
     pub characters: usize,
     pub reserved_url: usize,
     pub attachments: usize,
@@ -26,6 +31,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            poll_options: 4,
+            poll_characters: 50,
+            poll_min: 300,
+            poll_max: 2629746,
             characters: 500,
             reserved_url: 23,
             attachments: 4,
@@ -65,6 +74,19 @@ impl Limits {
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect();
         }
+        let polls = &config["polls"];
+        if let Some(v) = polls["max_options"].as_u64() {
+            limits.poll_options = v as usize;
+        }
+        if let Some(v) = polls["max_characters_per_option"].as_u64() {
+            limits.poll_characters = v as usize;
+        }
+        if let Some(v) = polls["min_expiration"].as_u64() {
+            limits.poll_min = v;
+        }
+        if let Some(v) = polls["max_expiration"].as_u64() {
+            limits.poll_max = v;
+        }
         limits
     }
 }
@@ -99,10 +121,20 @@ pub struct State {
     pub media: Vec<Media>,
     pub had_media: bool,
     pub has_poll: bool,
+    #[serde(default)]
+    pub poll_options: Vec<String>,
+    #[serde(default)]
+    pub poll_multiple: bool,
+    #[serde(default = "default_poll_duration")]
+    pub poll_duration: u64,
+    #[serde(default)]
+    pub schedule: String,
     pub dirty: bool,
     pub submission_key: String,
     pub attempted_at: Option<i64>,
     pub published_id: Option<String>,
+    #[serde(default)]
+    pub published_scheduled: bool,
     #[serde(skip)]
     pub sending: bool,
     #[serde(skip)]
@@ -111,6 +143,8 @@ pub struct State {
     pub error: Option<String>,
     #[serde(skip)]
     pub storage_error: Option<String>,
+    #[serde(skip)]
+    pub suggestions: Vec<completion::Suggestion>,
 }
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -136,14 +170,20 @@ impl Default for State {
             media: vec![],
             had_media: false,
             has_poll: false,
+            poll_options: vec![],
+            poll_multiple: false,
+            poll_duration: 86400,
+            schedule: String::new(),
             dirty: false,
             submission_key: uuid::Uuid::new_v4().to_string(),
             attempted_at: None,
             published_id: None,
+            published_scheduled: false,
             sending: false,
             importing: false,
             error: None,
             storage_error: None,
+            suggestions: vec![],
         }
     }
 }
@@ -289,8 +329,29 @@ impl State {
         let text = &self.text;
         self.published_id.is_none()
             && (!text.trim().is_empty() || !self.media.is_empty() || self.has_poll)
+            && (self.visibility != StatusVisibility::Direct || has_recipient(&self.text))
             && !self.mixed_media()
-            && !(self.has_poll && !self.media.is_empty())
+            && !((self.has_poll || !self.poll_options.is_empty()) && !self.media.is_empty())
+            && (self.poll_options.is_empty()
+                || (self.edit_id.is_none()
+                    && (2..=limits.poll_options).contains(&self.poll_options.len())
+                    && self.poll_options.iter().all(|option| {
+                        !option.trim().is_empty()
+                            && unicode_segmentation::UnicodeSegmentation::graphemes(
+                                option.as_str(),
+                                true,
+                            )
+                            .count()
+                                <= limits.poll_characters
+                    })
+                    && self.poll_options.iter().enumerate().all(|(index, option)| {
+                        !self.poll_options[..index]
+                            .iter()
+                            .any(|old| old.trim().eq_ignore_ascii_case(option.trim()))
+                    })
+                    && (limits.poll_min..=limits.poll_max).contains(&self.poll_duration)))
+            && (self.schedule.trim().is_empty()
+                || (self.edit_id.is_none() && schedule_time(&self.schedule).is_some()))
             && self.media.len() <= limits.attachments
             && self.characters(limits) <= limits.characters
             && self.media.iter().all(|media| {
@@ -314,6 +375,14 @@ impl State {
         }
         if let Some(language) = &self.language {
             payload["language"] = language.clone().into();
+        }
+        if self.edit_id.is_none() {
+            if !self.poll_options.is_empty() {
+                payload["poll"] = serde_json::json!({"options":self.poll_options.iter().map(|option|option.trim()).collect::<Vec<_>>(),"multiple":self.poll_multiple,"expires_in":self.poll_duration});
+            }
+            if let Some(time) = schedule_time(&self.schedule) {
+                payload["scheduled_at"] = time.to_rfc3339().into();
+            }
         }
         // Existing polls are deliberately left unchanged by text edits.
         if !self.media.is_empty() || self.had_media {
@@ -344,6 +413,17 @@ pub fn visibility_rank(value: &StatusVisibility) -> u8 {
 #[derive(Clone)]
 pub enum Message {
     New,
+    QuerySuggestions(u64, String),
+    Suggestions(u64, Vec<completion::Suggestion>),
+    Complete(String),
+    Private(Account),
+    TogglePoll(bool),
+    PollOption(usize, String),
+    AddPollOption,
+    RemovePollOption(usize),
+    PollMultiple(bool),
+    PollDuration(u64),
+    Schedule(String),
     Pane(widget::segmented_button::Entity),
     EditAlt(String),
     Reply(String),
@@ -383,6 +463,7 @@ impl std::fmt::Debug for Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Images,
+    Poll,
     Warning,
     Settings,
 }
@@ -395,6 +476,7 @@ pub fn panes() -> widget::segmented_button::SingleSelectModel {
         .icon(widget::icon::from_name("insert-image-symbolic"))
         .data(Pane::Images)
         .activate();
+    model.insert().text(fl!("compose-poll")).data(Pane::Poll);
     model
         .insert()
         .text(fl!("content-warning"))
@@ -505,9 +587,103 @@ pub fn view<'a>(
     } else {
         text_editor
     });
+    if editable && !state.suggestions.is_empty() {
+        top = top.push(
+            widget::row(
+                state
+                    .suggestions
+                    .iter()
+                    .map(|suggestion| {
+                        widget::button::standard(suggestion.label.clone())
+                            .on_press(app::Message::Compose(Message::Complete(
+                                suggestion.value.clone(),
+                            )))
+                            .into()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(4)
+            .wrap(),
+        );
+    }
+    if state.visibility == StatusVisibility::Direct {
+        top = top.push(widget::text::caption(fl!("private-help")));
+    }
     let remaining = limits.characters as i64 - state.characters(limits) as i64;
 
     let pane: cosmic::Element<'a, app::Message> = match tabs.active_data::<Pane>() {
+        Some(Pane::Poll) => {
+            let can_poll = editable && state.edit_id.is_none() && state.media.is_empty();
+            let toggle = widget::toggler(!state.poll_options.is_empty());
+            let mut options = widget::column![widget::settings::item(
+                fl!("compose-poll"),
+                if can_poll {
+                    toggle.on_toggle(|value| app::Message::Compose(Message::TogglePoll(value)))
+                } else {
+                    toggle
+                }
+            )]
+            .spacing(8);
+            for (index, option) in state.poll_options.iter().enumerate() {
+                let input =
+                    widget::text_input(format!("{} {}", fl!("poll-option"), index + 1), option);
+                options = options.push(
+                    widget::row![
+                        if can_poll {
+                            input.on_input(move |value| {
+                                app::Message::Compose(Message::PollOption(index, value))
+                            })
+                        } else {
+                            input
+                        },
+                        widget::button::standard(fl!("settings-remove"))
+                            .on_press_maybe((can_poll && state.poll_options.len() > 2).then_some(
+                                app::Message::Compose(Message::RemovePollOption(index))
+                            ))
+                    ]
+                    .spacing(8),
+                );
+            }
+            if !state.poll_options.is_empty() {
+                options = options.push(
+                    widget::button::standard(fl!("poll-add-option")).on_press_maybe(
+                        (can_poll && state.poll_options.len() < limits.poll_options)
+                            .then_some(app::Message::Compose(Message::AddPollOption)),
+                    ),
+                );
+                let multiple = widget::toggler(state.poll_multiple);
+                options = options.push(widget::settings::item(
+                    fl!("poll-multiple"),
+                    if can_poll {
+                        multiple
+                            .on_toggle(|value| app::Message::Compose(Message::PollMultiple(value)))
+                    } else {
+                        multiple
+                    },
+                ));
+                options = options.push(widget::text::caption(fl!("poll-expires")));
+                options = options.push(widget::text::caption(fl!(
+                    "poll-limits",
+                    options = (limits.poll_options as u32),
+                    characters = (limits.poll_characters as u32)
+                )));
+                let durations = [300u64, 3600, 86400, 604800];
+                options = options.push(widget::dropdown(
+                    vec![
+                        fl!("poll-five-minutes"),
+                        fl!("poll-hour"),
+                        fl!("poll-day"),
+                        fl!("poll-week"),
+                    ],
+                    durations
+                        .iter()
+                        .position(|value| *value == state.poll_duration),
+                    move |index| app::Message::Compose(Message::PollDuration(durations[index])),
+                ));
+                options = options.push(widget::text::caption(fl!("poll-help")));
+            }
+            options.into()
+        }
         Some(Pane::Warning) => {
             let toggle = widget::toggler(state.content_warning);
             let toggle = if editable {
@@ -540,6 +716,16 @@ pub fn view<'a>(
                 widget::text::caption(fl!("compose-language")),
                 language,
                 widget::text::caption(fl!("compose-language-help")),
+                widget::text::caption(fl!("compose-schedule")),
+                {
+                    let input = widget::text_input(fl!("schedule-placeholder"), &state.schedule);
+                    if editable && state.edit_id.is_none() {
+                        input.on_input(|value| app::Message::Compose(Message::Schedule(value)))
+                    } else {
+                        input
+                    }
+                },
+                widget::text::caption(fl!("schedule-help")),
             ]
             .spacing(8)
             .into()
@@ -550,7 +736,10 @@ pub fn view<'a>(
                 .padding(20)
                 .class(cosmic::style::Button::Standard)
                 .on_press_maybe(
-                    (editable && !state.has_poll && state.media.len() < limits.attachments)
+                    (editable
+                        && !state.has_poll
+                        && state.poll_options.is_empty()
+                        && state.media.len() < limits.attachments)
                         .then_some(app::Message::Compose(Message::PickImages)),
                 );
             #[cfg(target_os = "linux")]
@@ -566,7 +755,8 @@ pub fn view<'a>(
                 .into()
         }
     };
-    let pane = widget::container(pane)
+    let pane = widget::container(widget::scrollable(pane).height(Length::Shrink))
+        .max_height(240)
         .padding(12)
         .width(Length::Fill)
         .class(cosmic::style::Container::Card);
@@ -575,6 +765,12 @@ pub fn view<'a>(
     top = top.push(tabs).push(pane);
 
     let mut controls = widget::column![].spacing(16).width(Length::Fill);
+    if state.visibility == StatusVisibility::Direct && !has_recipient(&state.text) {
+        controls = controls.push(widget::text(fl!("private-recipient-required")));
+    }
+    if !state.schedule.trim().is_empty() && schedule_time(&state.schedule).is_none() {
+        controls = controls.push(widget::text(fl!("schedule-invalid")));
+    }
     if state.mixed_media() {
         controls = controls.push(widget::text(fl!("compose-mixed-media")));
     }
@@ -585,7 +781,11 @@ pub fn view<'a>(
         controls = controls.push(widget::text(error));
     }
     if state.published_id.is_some() {
-        controls = controls.push(widget::text(fl!("compose-posted")));
+        controls = controls.push(widget::text(if state.published_scheduled {
+            fl!("compose-scheduled")
+        } else {
+            fl!("compose-posted")
+        }));
     }
     if state.importing {
         controls = controls
@@ -608,7 +808,9 @@ pub fn view<'a>(
                 );
         }
     }
-    let has_extras = state.mixed_media()
+    let has_extras = (state.visibility == StatusVisibility::Direct && !has_recipient(&state.text))
+        || (!state.schedule.trim().is_empty() && schedule_time(&state.schedule).is_none())
+        || state.mixed_media()
         || state.error.is_some()
         || state.storage_error.is_some()
         || state.published_id.is_some()
@@ -634,6 +836,8 @@ pub fn view<'a>(
             .as_ref()
             .map(|language| format!("{}: {language}", fl!("compose-language"))),
         state.sensitive.then(|| fl!("compose-sensitive")),
+        (!state.schedule.trim().is_empty())
+            .then(|| format!("{}: {}", fl!("compose-schedule"), state.schedule)),
     ]
     .into_iter()
     .flatten()
@@ -667,6 +871,8 @@ pub fn view<'a>(
                 fl!("compose-retry")
             } else if state.edit_id.is_some() {
                 fl!("compose-save-edit")
+            } else if !state.schedule.trim().is_empty() {
+                fl!("compose-schedule-action")
             } else {
                 fl!("post")
             })
@@ -891,4 +1097,30 @@ fn preview_path(
         return None;
     }
     store.asset_path(&client.cache_key(), &state.id, name).ok()
+}
+
+fn default_poll_duration() -> u64 {
+    86400
+}
+
+/// Local wall-clock input is rejected if ambiguous during a daylight-saving change.
+pub fn schedule_time(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let text = text.trim();
+    let time = if let Ok(time) = chrono::DateTime::parse_from_rfc3339(text) {
+        time.with_timezone(&chrono::Utc)
+    } else {
+        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M")
+            .ok()?
+            .and_local_timezone(chrono::Local)
+            .single()?
+            .with_timezone(&chrono::Utc)
+    };
+    (time >= chrono::Utc::now() + chrono::Duration::minutes(5)).then_some(time)
+}
+
+pub fn has_recipient(text: &str) -> bool {
+    static MENTION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|\s)@[A-Za-z0-9_]+(?:@[A-Za-z0-9.-]+)?").unwrap()
+    });
+    MENTION.is_match(text)
 }

@@ -168,3 +168,15 @@ fn pagination_uses_next_link_rather_than_previous_or_numeric_id_assumptions() {
     );
     assert_eq!(crate::client::next_cursor("malformed"), None);
 }
+
+#[test]
+fn desktop_alerts_never_include_private_post_or_content_warning_text() {
+    let mut item = notification("private", "mention", "alice", "2026-01-01T12:00:00Z", true);
+    let post = item.status.as_mut().unwrap();
+    post.content = "secret private message".into();
+    post.spoiler_text = "secret warning".into();
+    post.visibility = megalodon::entities::status::StatusVisibility::Direct;
+    let summary = super::desktop::summary(&item);
+    assert!(summary.contains("alice"));
+    assert!(!summary.contains("secret"));
+}

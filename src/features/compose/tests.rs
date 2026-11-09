@@ -374,3 +374,89 @@ fn editing_existing_attachments_uses_cached_remote_previews_without_local_files(
         assert!(preview_handle(&state, &state.media[index], &client, &store, &cache).is_some());
     }
 }
+
+#[test]
+fn new_polls_enforce_server_limits_and_keep_existing_poll_edits_untouched() {
+    let limits = Limits::default();
+    let mut state = State::default();
+    state.text = "Choose".into();
+    state.poll_options = vec!["One".into(), "Two".into()];
+    assert!(state.valid(&limits));
+    assert_eq!(state.payload()["poll"]["options"], json!(["One", "Two"]));
+    state.poll_options[1] = " one ".into();
+    assert!(!state.valid(&limits));
+    state.poll_options[1] = "".into();
+    assert!(!state.valid(&limits));
+    state.poll_options[1] = "Two".into();
+    state.poll_duration = 1;
+    assert!(!state.valid(&limits));
+    state.poll_duration = 86400;
+    state.poll_options.push("x".repeat(51));
+    assert!(!state.valid(&limits));
+    state.poll_options.pop();
+    let mut edited = State::edit(
+        &post(StatusVisibility::Public),
+        megalodon::entities::StatusSource {
+            id: "s1".into(),
+            text: "edited".into(),
+            spoiler_text: "".into(),
+        },
+    );
+    edited.has_poll = true;
+    assert!(edited.payload().get("poll").is_none());
+    edited.poll_options = state.poll_options;
+    assert!(!edited.valid(&limits));
+}
+
+#[test]
+fn schedule_requests_cannot_silently_become_immediate_posts_and_keep_idempotency() {
+    let client = crate::client::Client::new("https://example.org".into(), Some("secret".into()));
+    let http = reqwest::Client::new();
+    let mut state = State::default();
+    state.text = "Later".into();
+    state.schedule = "yesterday".into();
+    assert!(!state.valid(&Limits::default()));
+    assert!(network::status_request(&http, &client, &state).is_err());
+    state.schedule = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    assert!(state.valid(&Limits::default()));
+    let request = network::status_request(&http, &client, &state).unwrap();
+    assert_eq!(request.headers()["idempotency-key"], state.submission_key);
+    let payload: serde_json::Value =
+        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+    assert!(payload["scheduled_at"].as_str().is_some());
+    let accepted = network::decode_published(
+        json!({"id":"schedule-1","scheduled_at":state.schedule,"params":{"text":"Later"}}),
+    )
+    .unwrap();
+    assert!(accepted.scheduled && accepted.post.is_none());
+    assert_eq!(accepted.id, "schedule-1");
+}
+
+#[test]
+fn private_messages_require_recipients_and_drafts_keep_poll_and_schedule_state() {
+    let mut state = State::default();
+    state.visibility = StatusVisibility::Direct;
+    state.reply_ceiling = Some(StatusVisibility::Direct);
+    state.text = "No recipient".into();
+    assert!(!state.valid(&Limits::default()));
+    state.text = "@alice@example.org Hello".into();
+    assert!(state.valid(&Limits::default()));
+    assert_eq!(state.payload()["visibility"], "direct");
+    state.visibility = StatusVisibility::Public;
+    assert!(!state.valid(&Limits::default()));
+    state.visibility = StatusVisibility::Direct;
+    state.poll_options = vec!["Yes".into(), "No".into()];
+    state.poll_multiple = true;
+    state.schedule = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let directory = Temporary::new();
+    let store = store::Store::at(directory.0.join("drafts"));
+    store
+        .save("https://example.org#alice", &[state.clone()])
+        .unwrap();
+    let restored = store.load("https://example.org#alice").unwrap().remove(0);
+    assert_eq!(restored.poll_options, state.poll_options);
+    assert!(restored.poll_multiple);
+    assert_eq!(restored.schedule, state.schedule);
+    assert_eq!(restored.reply_ceiling, Some(StatusVisibility::Direct));
+    assert!(store.load("https://example.org#bob").unwrap().is_empty());
+}

@@ -18,6 +18,7 @@ pub struct TootConfig {
     pub onboarding_completed: bool,
     /// Hide boosted (reblogged) statuses from timelines.
     pub hide_boosts: bool,
+    pub disable_desktop_notifications: bool,
     /// Hide reply statuses from timelines.
     pub hide_replies: bool,
     /// How much of each post to render in feeds.

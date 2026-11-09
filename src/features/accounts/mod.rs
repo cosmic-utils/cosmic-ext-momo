@@ -15,6 +15,9 @@ use crate::fl;
 #[derive(Debug, Clone)]
 pub enum Message {
     Open(String),
+    People(String, bool),
+    EditProfile,
+    Private(Account),
     Report(Account),
     Follow(String, bool),
     Mute(String, bool),
@@ -62,11 +65,13 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         })
         .collect();
     let followers = widget::column![
-        widget::text::text(crate::fl!("profile-followers")),
+        widget::button::link(crate::fl!("profile-followers"))
+            .on_press(Message::People(account.id.clone(), false)),
         widget::text::title3(account.followers_count.to_string()),
     ];
     let following = widget::column![
-        widget::text::text(crate::fl!("profile-following")),
+        widget::button::link(crate::fl!("profile-following"))
+            .on_press(Message::People(account.id.clone(), true)),
         widget::text::title3(account.following_count.to_string()),
     ]
     .width(Length::FillPortion(1))
@@ -100,6 +105,9 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
         display_name,
         username,
         relationship_actions,
+        is_me.then(|| widget::button::standard(fl!("profile-edit")).on_press(Message::EditProfile)),
+        can_act.then(|| widget::button::standard(fl!("private-write"))
+            .on_press(Message::Private(account.clone()))),
         bio,
         joined,
         info,

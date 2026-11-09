@@ -126,6 +126,9 @@ fn event(text: &str) -> Option<app::Message> {
             ))
         }
         "delete" if !event.payload.is_empty() => Some(app::Message::StatusDeleted(event.payload)),
+        "conversation" => Some(app::Message::Social(
+            crate::features::social::Message::ConversationUpdated,
+        )),
         "filters_changed" => Some(app::Message::ReloadFilters),
         "notifications_merged" => {
             Some(app::Message::Notifications(notifications::Message::Refresh))

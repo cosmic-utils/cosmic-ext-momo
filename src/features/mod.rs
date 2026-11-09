@@ -13,3 +13,5 @@ pub mod search;
 pub mod settings;
 pub mod status;
 pub mod timeline;
+
+pub mod social;

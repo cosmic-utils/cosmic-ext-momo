@@ -14,9 +14,11 @@ Catch up with your community, discover new voices, and join the conversation—a
 ## Make yourself at home
 
 - **Follow the conversation.** Read your home, local, and federated timelines, open threads, and explore profiles.
-- **Share your thoughts.** Write posts, reply, add images with descriptions, and edit what you’ve shared.
+- **Share your thoughts.** Write posts, reply, add images with descriptions, create polls, and schedule posts for later. Mention and hashtag suggestions help as you type.
 - **Keep the good stuff.** Boost posts, leave favorites, and bookmark things to revisit.
 - **Enjoy the details.** View photos, watch videos, and read at your own pace with content warnings and sensitive media controls.
+- **Stay in touch.** Get desktop alerts while Toot is running, keep track of unread activity, and open private conversations.
+- **Make it yours.** Manage lists, browse followers, and update your display name, bio, and follow-request settings.
 - **Bring your accounts.** Add multiple Mastodon accounts and switch between them, or browse as a guest before signing in.
 
 ## Get started
