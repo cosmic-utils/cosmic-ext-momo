@@ -1,5 +1,8 @@
 use super::Message;
-use crate::{client::Client, fl};
+use crate::{
+    client::{next_cursor, Client},
+    fl,
+};
 use cosmic::iced::{stream, Subscription};
 use futures_util::SinkExt;
 use megalodon::{entities::Notification, megalodon::GetNotificationsInputOptions};
@@ -55,27 +58,5 @@ pub fn timeline(client: Client, request: u64, cursor: Option<String>) -> Subscri
                 std::future::pending().await
             },
         )
-    })
-}
-pub fn next_cursor(header: &str) -> Option<String> {
-    header.split(',').find_map(|part| {
-        if !part
-            .split(';')
-            .skip(1)
-            .any(|attribute| attribute.trim() == "rel=\"next\"" || attribute.trim() == "rel=next")
-        {
-            return None;
-        }
-        let url = part
-            .split(';')
-            .next()?
-            .trim()
-            .strip_prefix('<')?
-            .strip_suffix('>')?;
-        reqwest::Url::parse(url)
-            .ok()?
-            .query_pairs()
-            .find(|(key, _)| key == "max_id")
-            .map(|(_, value)| value.into_owned())
     })
 }

@@ -321,7 +321,7 @@ impl Application for AppModel {
                 nav.activate(id);
             }
 
-            if mastodon.is_authenticated() && page == Page::Explore {
+            if mastodon.is_authenticated() && matches!(page, Page::Favorites | Page::Explore) {
                 nav.divider_above_set(id, true);
             }
         }
@@ -420,36 +420,66 @@ impl Application for AppModel {
             return vec![];
         }
         let spacing = cosmic::theme::active().cosmic().spacing;
+        let mut items = vec![menu::Item::Button(
+            fl!("feed-settings"),
+            Some(widget::icon::from_name("preferences-system-symbolic").into()),
+            MenuAction::Settings,
+        )];
+        if self.mastodon.is_authenticated() {
+            items.push(menu::Item::Button(
+                format!(
+                    "{} ({})",
+                    fl!("compose-drafts"),
+                    self.drafts
+                        .iter()
+                        .filter(|draft| draft.published_id.is_none())
+                        .count()
+                ),
+                Some(widget::icon::from_name("document-edit-symbolic").into()),
+                MenuAction::Drafts,
+            ));
+            items.push(menu::Item::Button(
+                fl!("feed-sign-out"),
+                Some(widget::icon::from_name("system-log-out-symbolic").into()),
+                MenuAction::Logout,
+            ));
+        }
+        items.push(menu::Item::Button(
+            fl!("about"),
+            Some(widget::icon::from_name("help-info-symbolic").into()),
+            MenuAction::About,
+        ));
+        // Keep the root enabled; the menu bar handles opening its popup.
+        let root = widget::button::icon(widget::icon::from_name("open-menu-symbolic"))
+            .tooltip(format!(
+                "{}\n{}",
+                fl!("feed-app-menu"),
+                self.sessions
+                    .active_session()
+                    .map(Session::label)
+                    .unwrap_or_else(|| fl!("app-title"))
+            ))
+            .on_press(Message::None)
+            .class(cosmic::style::Button::MenuRoot);
+        #[cfg(target_os = "linux")]
+        let root = root.name(fl!("feed-app-menu"));
         let menu_bar = menu::bar(vec![menu::Tree::with_children(
-            Into::<Element<Self::Message>>::into(menu::root(fl!("view"))),
-            menu::items(
-                &self.key_binds,
-                vec![
-                    menu::Item::Button(
-                        "Settings".to_string(),
-                        Some(widget::icon::from_name("preferences-system-symbolic").into()),
-                        MenuAction::Settings,
-                    ),
-                    menu::Item::Button(
-                        fl!("about"),
-                        Some(widget::icon::from_name("help-info-symbolic").into()),
-                        MenuAction::About,
-                    ),
-                ],
-            ),
+            Into::<Element<Self::Message>>::into(root),
+            menu::items(&self.key_binds, items),
         )])
         .item_height(ItemHeight::Dynamic(40))
         .item_width(ItemWidth::Uniform(260))
         .spacing(spacing.space_xxxs.into());
 
-        vec![menu_bar.into()]
-    }
-
-    fn header_center(&self) -> Vec<Element<'_, Self::Message>> {
-        if self.onboarding.is_some() {
-            return vec![];
-        }
-        vec![widget::text(self.instance.clone()).into()]
+        vec![
+            menu_bar.into(),
+            widget::text::heading(self.nav.text(self.nav.active()).unwrap_or("Toot"))
+                .wrapping(cosmic::iced::core::text::Wrapping::None)
+                .ellipsize(cosmic::iced::core::text::Ellipsize::End(
+                    cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+                ))
+                .into(),
+        ]
     }
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
@@ -460,27 +490,16 @@ impl Application for AppModel {
             vec![widget::button::standard(fl!("setup-add-account"))
                 .on_press(Message::StartOnboarding)
                 .into()]
+        } else if self.core.is_condensed() {
+            vec![crate::ui::icon_action(
+                "list-add-symbolic",
+                fl!("new-post"),
+                Some(Message::Compose(compose::Message::New)),
+            )]
         } else {
-            vec![
-                widget::icon::from_name("list-add-symbolic")
-                    .apply(widget::button::icon)
-                    .on_press(Message::Compose(compose::Message::New))
-                    .into(),
-                widget::button::standard(format!(
-                    "{} ({})",
-                    fl!("compose-drafts"),
-                    self.drafts
-                        .iter()
-                        .filter(|draft| draft.published_id.is_none())
-                        .count()
-                ))
-                .on_press(Message::Compose(compose::Message::Drafts))
-                .into(),
-                widget::icon::from_name("system-log-out-symbolic")
-                    .apply(widget::button::icon)
-                    .on_press(Message::Dialog(DialogAction::Open(Dialog::Logout)))
-                    .into(),
-            ]
+            vec![widget::button::suggested(fl!("new-post"))
+                .on_press(Message::Compose(compose::Message::New))
+                .into()]
         }
     }
 
@@ -1019,6 +1038,7 @@ impl Application for AppModel {
                 }
             }
             Message::Home(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.home.update(message));
             }
             Message::Notifications(message) => {
@@ -1026,18 +1046,23 @@ impl Application for AppModel {
                 tasks.push(self.notifications.update(message));
             }
             Message::Explore(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.explore.update(message.clone()));
             }
             Message::Local(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.local.update(message));
             }
             Message::Federated(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.federated.update(message));
             }
             Message::Favorites(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.favorites.update(message));
             }
             Message::Bookmarks(message) => {
+                self.cache.dirty = true;
                 tasks.push(self.bookmarks.update(message));
             }
             Message::Hashtags(message) => {
@@ -1136,6 +1161,11 @@ impl Application for AppModel {
                 _ => tasks.push(accounts::update(message)),
             },
             Message::Status(message) => match message {
+                status::Message::ToggleActions(id) => {
+                    if !self.cache.reading.expanded_actions.remove(&id) {
+                        self.cache.reading.expanded_actions.insert(id);
+                    }
+                }
                 status::Message::ToggleWarning(id) => {
                     if !self.cache.reading.warnings.remove(&id) {
                         self.cache.reading.warnings.insert(id);
@@ -1395,6 +1425,17 @@ impl Application for AppModel {
             Message::Compose(message) => tasks.push(self.update_compose(message)),
             Message::StatusDeleted(id) => {
                 self.cache.statuses.remove(&id);
+                self.cache.dirty = true;
+                for feed in [
+                    &mut self.home,
+                    &mut self.explore,
+                    &mut self.local,
+                    &mut self.federated,
+                    &mut self.favorites,
+                    &mut self.bookmarks,
+                ] {
+                    tasks.push(feed.update(timeline::Message::DeleteStatus(id.clone())));
+                }
             }
             Message::Open(url) => {
                 if !reading::html::web_url(&url) {
@@ -2633,14 +2674,18 @@ where
             .unwrap_or_else(Page::variants);
 
         for page in variants {
-            self.nav
+            let id = self
+                .nav
                 .insert()
                 .text(page.to_string())
                 .icon(widget::icon::from_name(page.icon()))
-                .data::<Page>(page.clone());
-
-            self.nav.activate_position(0);
+                .data::<Page>(page.clone())
+                .id();
+            if self.mastodon.is_authenticated() && matches!(page, Page::Favorites | Page::Explore) {
+                self.nav.divider_above_set(id, true);
+            }
         }
+        self.nav.activate_position(0);
     }
 }
 
@@ -2666,6 +2711,8 @@ impl ContextPage {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
+    Drafts,
+    Logout,
     About,
     Settings,
 }
@@ -2675,6 +2722,8 @@ impl menu::action::MenuAction for MenuAction {
 
     fn message(&self) -> Self::Message {
         match self {
+            MenuAction::Drafts => Message::Compose(compose::Message::Drafts),
+            MenuAction::Logout => Message::Dialog(DialogAction::Open(Dialog::Logout)),
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
         }

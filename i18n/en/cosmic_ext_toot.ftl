@@ -240,3 +240,24 @@ activity-load-error = Could not load your activity. Your current notifications a
 activity-clear-error = Could not clear your notification history. Nothing has been removed from this view; retry when you’re connected.
 activity-dismiss-error = Could not dismiss this notification. Try again.
 activity-request-error = Could not update this follow request. It is still here so you can retry.
+
+## Feed and title bar
+feed-settings = Settings & accounts
+feed-sign-out = Sign out
+feed-refresh = Refresh feed
+feed-show-new = Show new posts
+feed-load-error = Could not load this feed. Your current posts are still here; check your connection and retry.
+feed-loading = Loading posts…
+feed-empty-description = New posts will appear here. You can refresh or check for older posts.
+feed-end = You’ve reached the end of this feed.
+feed-more = More post actions
+feed-boost = Boost
+feed-unboost = Undo boost
+feed-favorite = Favorite
+feed-unfavorite = Undo favorite
+feed-bookmark = Bookmark
+feed-unbookmark = Remove bookmark
+feed-boosted = Boosted
+feed-followers-only = Followers only
+feed-mentioned-only = Mentioned people only
+feed-app-menu = Application menu

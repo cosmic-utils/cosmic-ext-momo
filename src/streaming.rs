@@ -22,9 +22,9 @@ pub fn stream_user_events(mastodon: Client) -> Subscription<app::Message> {
                             match message {
                                 StreamMessage::Update(status) => {
                                     if let Err(err) = output
-                                        .send(app::Message::Home(timeline::Message::PrependStatus(
-                                            status,
-                                        )))
+                                        .send(app::Message::Home(
+                                            timeline::Message::IncomingStatus(status),
+                                        ))
                                         .await
                                     {
                                         tracing::warn!("failed to send post: {}", err);
@@ -43,11 +43,8 @@ pub fn stream_user_events(mastodon: Client) -> Subscription<app::Message> {
                                     }
                                 }
                                 StreamMessage::Delete(id) => {
-                                    if let Err(err) = output
-                                        .send(app::Message::Home(timeline::Message::DeleteStatus(
-                                            id,
-                                        )))
-                                        .await
+                                    if let Err(err) =
+                                        output.send(app::Message::StatusDeleted(id)).await
                                     {
                                         tracing::warn!("failed to send post: {}", err);
                                     }

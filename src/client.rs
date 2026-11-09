@@ -242,3 +242,27 @@ mod tests {
         assert_eq!(first.label(), "@alice@example.org · https://example.org");
     }
 }
+
+/// Read the server-provided pagination cursor without assuming numeric IDs.
+pub fn next_cursor(header: &str) -> Option<String> {
+    header.split(',').find_map(|part| {
+        if !part
+            .split(';')
+            .skip(1)
+            .any(|attribute| attribute.trim() == "rel=\"next\"" || attribute.trim() == "rel=next")
+        {
+            return None;
+        }
+        let url = part
+            .split(';')
+            .next()?
+            .trim()
+            .strip_prefix('<')?
+            .strip_suffix('>')?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .query_pairs()
+            .find(|(key, _)| key == "max_id")
+            .map(|(_, value)| value.into_owned())
+    })
+}
