@@ -1,45 +1,81 @@
+use super::Message;
+use crate::{client::Client, fl};
 use cosmic::iced::{stream, Subscription};
 use futures_util::SinkExt;
-use megalodon::megalodon::GetNotificationsInputOptions;
+use megalodon::{entities::Notification, megalodon::GetNotificationsInputOptions};
 
-use crate::client::Client;
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub notifications: Vec<Notification>,
+    pub cursor: Option<String>,
+    pub more: bool,
+}
 
-use super::Message;
-
-pub fn timeline(mastodon: Client, max_id: Option<String>) -> Subscription<Message> {
-    Subscription::run_with((mastodon, max_id), |(mastodon, max_id)| {
-        let mastodon = mastodon.clone();
-        let max_id = max_id.clone();
+pub fn timeline(client: Client, request: u64, cursor: Option<String>) -> Subscription<Message> {
+    Subscription::run_with((client, request, cursor), |(client, request, cursor)| {
+        let client = client.clone();
+        let request = *request;
+        let cursor = cursor.clone();
         stream::channel(
             1,
             move |mut output: futures_channel::mpsc::Sender<Message>| async move {
-                let options = GetNotificationsInputOptions {
-                    limit: Some(30),
-                    max_id,
-                    ..Default::default()
-                };
-
-                match mastodon.get_notifications(Some(&options)).await {
-                    Ok(response) => {
-                        for notification in response.json {
-                            if let Err(err) = output
-                                .send(Message::AppendNotification(notification.clone()))
-                                .await
-                            {
-                                tracing::warn!("failed to send post: {}", err);
-                            }
-                        }
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    client.get_notifications(Some(&GetNotificationsInputOptions {
+                        limit: Some(30),
+                        max_id: cursor,
+                        ..Default::default()
+                    })),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .ok_or_else(|| fl!("activity-load-error"))
+                .map(|response| {
+                    let next = response
+                        .header
+                        .get("link")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(next_cursor);
+                    let more = next.is_some()
+                        || (response.header.get("link").is_none() && response.json.len() == 30);
+                    let cursor = next.or_else(|| {
+                        response
+                            .json
+                            .last()
+                            .map(|notification| notification.id.clone())
+                    });
+                    Page {
+                        notifications: response.json,
+                        cursor,
+                        more,
                     }
-                    Err(err) => {
-                        tracing::warn!("failed to get notifications: {}", err);
-                    }
-                }
-                if let Err(err) = output.send(Message::LoadComplete).await {
-                    tracing::warn!("failed to send load-complete: {}", err);
-                }
-
+                });
+                let _ = output.send(Message::PageLoaded(request, result)).await;
                 std::future::pending().await
             },
         )
+    })
+}
+pub fn next_cursor(header: &str) -> Option<String> {
+    header.split(',').find_map(|part| {
+        if !part
+            .split(';')
+            .skip(1)
+            .any(|attribute| attribute.trim() == "rel=\"next\"" || attribute.trim() == "rel=next")
+        {
+            return None;
+        }
+        let url = part
+            .split(';')
+            .next()?
+            .trim()
+            .strip_prefix('<')?
+            .strip_suffix('>')?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .query_pairs()
+            .find(|(key, _)| key == "max_id")
+            .map(|(_, value)| value.into_owned())
     })
 }

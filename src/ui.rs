@@ -1,0 +1,41 @@
+//! Shared layout and interaction conventions for the native COSMIC UI.
+use cosmic::{
+    iced::{Alignment, Length},
+    widget, Element,
+};
+
+pub const CONTENT_WIDTH: u32 = 800;
+pub const GAP: u16 = 16;
+
+pub fn empty<'a, M: Clone + 'static>(
+    icon: &str,
+    title: String,
+    description: String,
+) -> Element<'a, M> {
+    widget::container(
+        widget::column![
+            widget::icon::from_name(icon.to_string()).size(40),
+            widget::text::title3(title),
+            widget::text(description),
+        ]
+        .spacing(12)
+        .align_x(Alignment::Center),
+    )
+    .padding(32)
+    .center_x(Length::Fill)
+    .into()
+}
+pub fn icon_action<'a, M: Clone + 'static>(
+    icon: &str,
+    label: String,
+    message: Option<M>,
+) -> Element<'a, M> {
+    let button = widget::button::icon(widget::icon::from_name(icon.to_string()))
+        .icon_size(18)
+        .padding(8)
+        .tooltip(label.clone())
+        .on_press_maybe(message);
+    #[cfg(target_os = "linux")]
+    let button = button.name(label);
+    button.into()
+}
