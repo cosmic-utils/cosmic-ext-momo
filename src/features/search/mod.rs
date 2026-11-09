@@ -120,9 +120,9 @@ impl Search {
             .height(Length::Fill)
             .apply(widget::container)
             .max_width(700)
-            .width(Length::Fill)
+            .apply(widget::container)
+            .center_x(Length::Fill)
             .height(Length::Fill)
-            .align_x(Alignment::Start)
             .into();
         }
 
@@ -224,9 +224,9 @@ impl Search {
         .spacing(spacing.space_s)
         .apply(widget::container)
         .max_width(700)
-        .width(Length::Fill)
+        .apply(widget::container)
+        .center_x(Length::Fill)
         .height(Length::Fill)
-        .align_x(Alignment::Start)
         .into()
     }
 

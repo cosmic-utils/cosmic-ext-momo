@@ -73,7 +73,7 @@ pub fn view<'a>(
             widget::settings::section().title("Accounts"),
             |section, (index, session)| {
                 let mut row: Vec<Element<'a, Message>> = vec![
-                    Element::from(widget::text(session.label())),
+                    Element::from(widget::text(session.handle())),
                     Element::from(widget::space::horizontal()),
                 ];
                 if index != active {

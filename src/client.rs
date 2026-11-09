@@ -161,6 +161,10 @@ impl Sessions {
 
 impl Session {
     pub fn label(&self) -> String {
+        format!("{} · {}", self.handle(), self.base_url)
+    }
+
+    pub fn handle(&self) -> String {
         let host = reqwest::Url::parse(&self.base_url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_owned))
@@ -172,7 +176,7 @@ impl Session {
         } else {
             format!("{}@{}", self.acct, host)
         };
-        format!("@{} · {}", acct, self.base_url)
+        format!("@{acct}")
     }
 }
 
