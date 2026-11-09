@@ -8,6 +8,9 @@
 
 Catch up with your community, discover new voices, and join the conversation—all from an app that feels at home on your desktop.
 
+![Toot feed in dark mode](assets/screenshots/feed-dark.png#gh-dark-mode-only)
+![Toot feed in light mode](assets/screenshots/feed-light.png#gh-light-mode-only)
+
 ## Make yourself at home
 
 - **Follow the conversation.** Read your home, local, and federated timelines, open threads, and explore profiles.
