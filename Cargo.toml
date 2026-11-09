@@ -5,6 +5,9 @@ edition = "2021"
 repository = "https://github.com/edfloreshz/toot"
 
 [dependencies]
+gstreamer = "0.23.7"
+gstreamer-app = "0.23.5"
+gstreamer-video = "0.23.6"
 dirs = "7.0.0"
 futures-channel = "0.3.34"
 futures-util = "0.3.34"

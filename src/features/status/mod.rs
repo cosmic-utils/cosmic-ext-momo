@@ -42,8 +42,8 @@ pub enum Message {
     Boost(String, bool),
     Bookmark(String, bool),
     OpenLink(String),
-    /// Open the post image gallery at the selected index.
-    ViewImage(Vec<(String, String)>, usize),
+    /// Open the post media gallery at the selected index.
+    ViewMedia(Vec<crate::media::Attachment>, usize),
     /// Request to delete one of the authenticated user's own statuses;
     /// opens a confirmation dialog rather than deleting immediately.
     Delete(String),
@@ -281,8 +281,8 @@ pub fn update(message: Message) -> Task<app::Message> {
             cosmic::task::message(app::Message::Compose(compose::Message::Edit(id)))
         }
         Message::OpenLink(url) => cosmic::task::message(app::Message::Open(url)),
-        Message::ViewImage(images, index) => cosmic::task::message(app::Message::Dialog(
-            app::DialogAction::Open(app::Dialog::Image(images, index)),
+        Message::ViewMedia(images, index) => cosmic::task::message(app::Message::Dialog(
+            app::DialogAction::Open(app::Dialog::Media(images, index)),
         )),
         Message::Delete(status_id) => cosmic::task::message(app::Message::Dialog(
             app::DialogAction::Open(app::Dialog::DeleteStatus(status_id)),
@@ -461,41 +461,19 @@ fn media<'a>(
     let images: Vec<_> = status
         .media_attachments
         .iter()
-        .filter_map(|media| {
-            matches!(
-                media.r#type,
-                megalodon::entities::attachment::AttachmentType::Image
-                    | megalodon::entities::attachment::AttachmentType::Gifv
-            )
-            .then(|| {
-                media
-                    .preview_url
-                    .as_ref()
-                    .map(|preview| (preview.clone(), media.url.clone()))
-            })
-            .flatten()
-        })
+        .filter_map(crate::media::Attachment::from_media)
         .collect();
 
     let attachments = status
         .media_attachments
         .iter()
         .map(|media| {
-            let is_picture = matches!(
-                media.r#type,
-                megalodon::entities::attachment::AttachmentType::Image
-                    | megalodon::entities::attachment::AttachmentType::Gifv
-            );
-            let on_press = match &media.preview_url {
-                Some(preview_url) if is_picture => Message::ViewImage(
-                    images.clone(),
-                    images
-                        .iter()
-                        .position(|image| image == &(preview_url.clone(), media.url.clone()))
-                        .unwrap_or(0),
-                ),
-                _ => Message::OpenLink(media.url.clone()),
-            };
+            let on_press =
+                if let Some(index) = images.iter().position(|image| image.url == media.url) {
+                    Message::ViewMedia(images.clone(), index)
+                } else {
+                    Message::OpenLink(media.url.clone())
+                };
 
             let button = widget::button::image(
                 media
@@ -505,23 +483,45 @@ fn media<'a>(
                     .cloned()
                     .unwrap_or(crate::cache::fallback_handle()),
             )
-            .on_press(on_press);
+            .on_press(on_press.clone());
             let button = if compact {
                 button.width(80.0).height(80.0)
             } else {
                 button.width(240.0)
             };
-            widget::column![
-                button,
-                widget::selectable_text(
-                    media
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| fl!("reading-no-description"))
-                )
-            ]
-            .width(240.0)
-            .into()
+            let is_video = matches!(
+                media.r#type,
+                megalodon::entities::attachment::AttachmentType::Video
+                    | megalodon::entities::attachment::AttachmentType::Gifv
+            );
+            if is_video {
+                cosmic::iced::widget::stack![
+                    button,
+                    widget::container(
+                        widget::button::icon(widget::icon::from_name(
+                            "media-playback-start-symbolic"
+                        ))
+                        .icon_size(32)
+                        .class(cosmic::style::Button::Standard)
+                        .tooltip(fl!("media-play"))
+                        .on_press(on_press),
+                    )
+                    .center(Length::Fill),
+                ]
+                .into()
+            } else {
+                widget::column![
+                    button,
+                    widget::selectable_text(
+                        media
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| fl!("reading-no-description"))
+                    ),
+                ]
+                .width(240.0)
+                .into()
+            }
         })
         .collect::<Vec<Element<Message>>>();
 
