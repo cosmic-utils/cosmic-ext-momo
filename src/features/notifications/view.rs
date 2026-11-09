@@ -75,7 +75,8 @@ pub fn notification<'a>(notification: &'a Notification, cache: &'a Cache) -> Ele
         widget::container(
             status::status(
                 status_data,
-                StatusOptions::new(false, true, false, true),
+                StatusOptions::new(false, true, false, true)
+                    .context(crate::features::reading::filters::Context::Notifications),
                 cache,
             )
             .map(Message::Status),

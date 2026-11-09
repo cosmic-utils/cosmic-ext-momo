@@ -11,6 +11,7 @@ use crate::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct Cache {
+    pub reading: crate::features::reading::State,
     pub handles: HashMap<String, Handle>,
     pub statuses: HashMap<String, Status>,
     pub notifications: HashMap<String, Notification>,
@@ -35,6 +36,7 @@ pub struct Cache {
 impl Cache {
     pub fn new() -> Self {
         Self {
+            reading: crate::features::reading::State::new(false),
             handles: HashMap::new(),
             statuses: HashMap::new(),
             notifications: HashMap::new(),
@@ -87,6 +89,7 @@ impl Cache {
     }
 
     pub fn clear(&mut self) {
+        self.reading = crate::features::reading::State::new(false);
         self.statuses.clear();
         self.notifications.clear();
         self.handles.clear();

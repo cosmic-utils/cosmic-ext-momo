@@ -130,6 +130,9 @@ impl Notifications {
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
+        if let Some(notice) = crate::features::reading::filter_notice(cache) {
+            return notice.map(view::Message::Status).map(Message::Notification);
+        }
         if self.is_initial_loading() {
             return widget::container(widget::indeterminate_circular().size(40.0))
                 .center(Length::Fill)
@@ -156,6 +159,14 @@ impl Notifications {
                 self.filter
                     .as_ref()
                     .is_none_or(|filter| notification.r#type == *filter)
+            })
+            .filter(|notification| {
+                notification.status.as_ref().is_none_or(|status| {
+                    cache.reading.filters.decision(
+                        status,
+                        crate::features::reading::filters::Context::Notifications,
+                    ) != crate::features::reading::filters::Decision::Hide
+                })
             })
             .map(|notification| view::notification(notification, cache).map(Message::Notification))
             .collect();

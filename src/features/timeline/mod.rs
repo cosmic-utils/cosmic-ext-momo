@@ -160,24 +160,50 @@ impl Timeline {
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
+        if let Some(notice) = crate::features::reading::filter_notice(cache) {
+            return notice.map(Message::Status);
+        }
         if self.is_initial_loading() {
             return widget::container(widget::indeterminate_circular().size(40.0))
                 .center(Length::Fill)
                 .into();
         }
 
+        let context = match self.kind {
+            TimelineKind::Public
+            | TimelineKind::Local
+            | TimelineKind::Federated
+            | TimelineKind::Tag(_) => crate::features::reading::filters::Context::Public,
+            _ => crate::features::reading::filters::Context::Home,
+        };
         let mut statuses: Vec<Element<_>> = self
             .statuses
             .iter()
             .filter_map(|id| cache.statuses.get(id))
             .filter(|status| cache.is_visible(status))
-            .map(|status| status::status(status, StatusOptions::all(), cache).map(Message::Status))
+            .filter(|status| {
+                cache.reading.filters.decision(status, context)
+                    != crate::features::reading::filters::Decision::Hide
+            })
+            .map(|status| {
+                status::status(status, StatusOptions::all().context(context), cache)
+                    .map(Message::Status)
+            })
             .collect();
 
         if statuses.is_empty() {
-            return widget::container(widget::text("Nothing here yet"))
-                .center(Length::Fill)
-                .into();
+            let mut empty = widget::column![widget::text(crate::fl!("reading-no-visible-posts"))]
+                .spacing(spacing.space_s);
+            if !self.statuses.is_empty() {
+                empty = empty.push(
+                    widget::button::standard(crate::fl!("reading-load-more"))
+                        .on_press_maybe((!self.loading).then_some(Message::LoadMore(true))),
+                );
+            }
+            if self.loading {
+                empty = empty.push(widget::indeterminate_circular().size(24.));
+            }
+            return widget::container(empty).center(Length::Fill).into();
         }
 
         if self.loading {
