@@ -39,3 +39,18 @@ pub fn icon_action<'a, M: Clone + 'static>(
     let button = button.name(label);
     button.into()
 }
+
+/// Keep the refresh control's footprint while a refresh is in progress.
+pub fn refresh_action<'a, M: Clone + 'static>(
+    refreshing: bool,
+    label: String,
+    message: Option<M>,
+) -> Element<'a, M> {
+    if refreshing {
+        widget::container(widget::indeterminate_circular().size(18.))
+            .padding(8)
+            .into()
+    } else {
+        icon_action("view-refresh-symbolic", label, message)
+    }
+}

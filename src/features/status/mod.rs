@@ -1,6 +1,5 @@
 use cosmic::{
     app::Task,
-    iced::widget::scrollable::{Direction, Scrollbar},
     iced::{Alignment, Length},
     widget, Apply, Element,
 };
@@ -485,11 +484,13 @@ fn media<'a>(
     cache: &'a Cache,
     options: StatusOptions,
     density: FeedDensity,
-) -> Option<cosmic::iced::widget::Scrollable<'a, Message, cosmic::Theme>> {
+) -> Option<Element<'a, Message>> {
     if density == FeedDensity::TextOnly {
         return None;
     }
     let compact = density == FeedDensity::Compact;
+    let single = status.media_attachments.len() == 1;
+    let gallery_height = if compact { 120.0 } else { 240.0 };
 
     let spacing = cosmic::theme::active().cosmic().spacing;
 
@@ -510,15 +511,35 @@ fn media<'a>(
                     Message::OpenLink(media.url.clone())
                 };
 
-            let button = widget::button::image(
+            let width = Length::Fill;
+            let height = if single {
+                Length::Shrink
+            } else {
+                Length::Fixed(gallery_height)
+            };
+            let preview = widget::image(
                 media
                     .preview_url
                     .as_ref()
                     .and_then(|url| cache.handles.get(url))
                     .cloned()
-                    .unwrap_or(crate::cache::fallback_handle()),
+                    .unwrap_or_else(crate::cache::fallback_handle),
             )
-            .on_press(on_press.clone());
+            .width(width)
+            .height(height)
+            .expand(single)
+            .content_fit(if single {
+                cosmic::iced::ContentFit::Contain
+            } else {
+                cosmic::iced::ContentFit::Cover
+            })
+            .border_radius([9.0; 4]);
+            let button = widget::button::custom(preview)
+                .class(cosmic::style::Button::Image)
+                .padding(0)
+                .width(width)
+                .height(height)
+                .on_press(on_press.clone());
             #[cfg(target_os = "linux")]
             let button = button.name(
                 media
@@ -527,11 +548,6 @@ fn media<'a>(
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| fl!("media-open-attachment")),
             );
-            let button = if compact {
-                button.width(80.0).height(80.0)
-            } else {
-                button.width(240.0)
-            };
             let is_video = matches!(
                 media.r#type,
                 megalodon::entities::attachment::AttachmentType::Video
@@ -553,25 +569,32 @@ fn media<'a>(
                 ]
                 .into()
             } else {
-                widget::column![
-                    button,
-                    widget::selectable_text(
-                        media
-                            .description
-                            .clone()
-                            .unwrap_or_else(|| fl!("reading-no-description"))
-                    ),
-                ]
-                .width(240.0)
-                .into()
+                button.into()
             }
         })
         .collect::<Vec<Element<Message>>>();
 
-    (!status.media_attachments.is_empty() && options.media).then(|| {
-        widget::scrollable(widget::row(attachments).spacing(spacing.space_xxs))
-            .direction(Direction::Horizontal(Scrollbar::new()))
-    })
+    if status.media_attachments.is_empty() || !options.media {
+        return None;
+    }
+    if single {
+        attachments.into_iter().next()
+    } else {
+        let mut grid = widget::column![]
+            .spacing(spacing.space_xxs)
+            .width(Length::Fill);
+        let mut attachments = attachments.into_iter();
+        while let Some(first) = attachments.next() {
+            let mut row = widget::row![first]
+                .spacing(spacing.space_xxs)
+                .width(Length::Fill);
+            if let Some(second) = attachments.next() {
+                row = row.push(second);
+            }
+            grid = grid.push(row);
+        }
+        Some(grid.into())
+    }
 }
 
 fn tags(status: &Status, options: StatusOptions) -> Option<Element<'_, Message>> {

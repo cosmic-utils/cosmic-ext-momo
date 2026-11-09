@@ -3045,25 +3045,24 @@ impl AppModel {
         .height(bar_height);
 
         let mut content = widget::column![header, widget::container(image).center(Length::Fill),];
-        if attachment.video {
-            let description = attachment
-                .description
-                .clone()
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| fl!("reading-no-description"));
-            content = content.push(
-                widget::container(
-                    widget::scrollable(
-                        widget::selectable_text(description)
-                            .width(Length::Fill)
-                            .center(),
-                    )
-                    .height(80.0),
+        let description = attachment
+            .description
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| fl!("reading-no-description"));
+        content = content.push(
+            widget::container(
+                widget::scrollable(
+                    widget::selectable_text(description)
+                        .width(Length::Fill)
+                        .center(),
                 )
-                .padding([spacing.space_xs, spacing.space_m])
-                .width(Length::Fill),
-            );
-        }
+                .height(80.0),
+            )
+            .padding([spacing.space_xs, spacing.space_m])
+            .width(Length::Fill),
+        );
+
         content
             .push(footer)
             .apply(widget::container)
