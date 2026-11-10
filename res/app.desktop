@@ -6,5 +6,5 @@ Terminal=false
 Type=Application
 StartupNotify=true
 Icon=dev.edfloreshz.Toot
-Categories=Network;InstantMessaging;X-COSMIC;
+Categories=Network;X-COSMIC;
 Keywords=toot;mastodon;fediverse;

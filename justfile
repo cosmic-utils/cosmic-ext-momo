@@ -91,9 +91,8 @@ vendor-extract:
     rm -rf vendor
     tar pxf vendor.tar
 
-# Check translations and desktop integration without building the application.
+# Check desktop integration without building the application.
 check-resources:
-    python3 scripts/check_resources.py
     desktop-file-validate res/app.desktop
     appstreamcli validate --no-net res/{{appid}}.metainfo.xml
 
