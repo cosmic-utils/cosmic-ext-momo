@@ -387,7 +387,7 @@ impl Application for AppModel {
 
         let about = About::default()
             .name(fl!("app-title"))
-            .version("0.1.0")
+            .version("0.1.3")
             .icon(widget::icon::from_name(Self::APP_ID))
             .author("Eduardo Flores")
             .developers([("Eduardo Flores", "edfloreshz@proton.me")])
