@@ -25,6 +25,8 @@ Catch up with your community, discover new voices, and join the conversation—a
 
 Open Toot and enter your Mastodon server’s address. The welcome guide will walk you through signing in through your browser and connecting your account. You can add another account later in Settings.
 
+To browse without an account, choose **Browse public posts**. Guest browsing defaults to mastodon.world. Use **Change server** to browse another instance; some servers require signing in to view their feeds.
+
 Toot is under active development. Features and installation options are still taking shape.
 
 ## Help shape Toot

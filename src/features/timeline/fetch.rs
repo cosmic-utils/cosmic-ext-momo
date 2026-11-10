@@ -116,10 +116,7 @@ pub fn timeline(
                     .await;
                     let result = match result {
                         Ok(Ok(page)) => Ok(page),
-                        Ok(Err(error)) => Err(crate::client::api_error(
-                            &error,
-                            crate::fl!("feed-load-error"),
-                        )),
+                        Ok(Err(error)) => Err(feed_error(&mastodon, &error)),
                         Err(_) => Err(crate::fl!("feed-load-error")),
                     };
                     let _ = output.send(Message::PageLoaded(request, result)).await;
@@ -129,6 +126,33 @@ pub fn timeline(
             )
         },
     )
+}
+
+fn feed_error(client: &Client, error: &megalodon::error::Error) -> String {
+    if !client.is_authenticated() && guest_access_restricted(error) {
+        crate::fl!("guest-feed-restricted")
+    } else {
+        crate::client::api_error(error, crate::fl!("feed-load-error"))
+    }
+}
+
+fn guest_access_restricted(error: &megalodon::error::Error) -> bool {
+    match error {
+        megalodon::error::Error::OwnError(error) => {
+            matches!(error.status, Some(401 | 403))
+                || (error.status == Some(422)
+                    && serde_json::from_str::<serde_json::Value>(&error.message)
+                        .ok()
+                        .and_then(|body| body.get("error")?.as_str().map(str::to_owned))
+                        .is_some_and(|message| {
+                            message == "This method requires an authenticated user"
+                        }))
+        }
+        megalodon::error::Error::RequestError(error) => error
+            .status()
+            .is_some_and(|status| matches!(status.as_u16(), 401 | 403)),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,5 +174,58 @@ fn page(response: megalodon::response::Response<Vec<megalodon::entities::Status>
         statuses: response.json,
         cursor,
         more,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error(status: u16, message: &str) -> megalodon::error::Error {
+        megalodon::error::Error::new_own(
+            message.into(),
+            megalodon::error::Kind::HTTPStatusError,
+            None,
+            Some(status),
+            None,
+        )
+    }
+
+    #[test]
+    fn restricted_guest_feeds_explain_how_to_continue() {
+        let guest = Client::new("https://example.org".into(), None);
+        for failure in [
+            error(401, "unauthorized"),
+            error(403, "forbidden"),
+            error(
+                422,
+                r#"{"error":"This method requires an authenticated user"}"#,
+            ),
+        ] {
+            assert_eq!(
+                feed_error(&guest, &failure),
+                crate::fl!("guest-feed-restricted")
+            );
+        }
+        for failure in [
+            error(422, r#"{"error":"Invalid parameter"}"#),
+            error(429, "rate limited"),
+            error(500, "unavailable"),
+        ] {
+            assert_eq!(feed_error(&guest, &failure), crate::fl!("feed-load-error"));
+        }
+    }
+
+    #[test]
+    fn authenticated_feeds_keep_session_expiry_and_other_errors_distinct() {
+        let client = Client::new("https://example.org".into(), Some("token".into()));
+        assert_eq!(
+            feed_error(&client, &error(401, "")),
+            crate::fl!("session-expired")
+        );
+        assert_eq!(
+            feed_error(&client, &error(403, "")),
+            crate::fl!("feed-load-error")
+        );
     }
 }

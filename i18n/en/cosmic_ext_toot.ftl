@@ -22,6 +22,9 @@ support = Support
 server-question = What's your server?
 server-description = If you don't have an account yet, register to a server of your choice.
 server-url = Server URL
+guest-change-server = Change server
+guest-server-description = Choose a server to browse public posts, such as mastodon.world. Some servers require an account to view their feeds.
+guest-feed-restricted = This server requires an account to view this feed. Add an account or choose another server using Change server.
 continue = Continue
 
 ## Authorization

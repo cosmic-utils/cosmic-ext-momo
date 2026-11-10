@@ -570,9 +570,16 @@ impl Application for AppModel {
             return vec![];
         }
         if !self.mastodon.is_authenticated() {
-            vec![widget::button::standard(fl!("setup-add-account"))
-                .on_press(Message::StartOnboarding)
-                .into()]
+            vec![
+                widget::button::standard(fl!("guest-change-server"))
+                    .on_press(Message::Dialog(DialogAction::Open(Dialog::SwitchInstance(
+                        self.mastodon.base_url.clone(),
+                    ))))
+                    .into(),
+                widget::button::standard(fl!("setup-add-account"))
+                    .on_press(Message::StartOnboarding)
+                    .into(),
+            ]
         } else {
             let button = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
                 .icon_size(18)
@@ -1900,6 +1907,7 @@ impl Application for AppModel {
             }
             Message::UpdateMastodonInstance => {
                 self.mastodon = Client::new(self.instance(), None);
+                tasks.push(self.reset_and_reload_feeds());
             }
             Message::SetAccount(account) => {
                 self.session_expired = false;
@@ -2090,7 +2098,10 @@ impl Application for AppModel {
                                 }));
                             }
                             Dialog::SwitchInstance(instance) => {
-                                self.instance = instance;
+                                let Ok(server) = onboarding::normalize_server(&instance) else {
+                                    return Task::none();
+                                };
+                                self.instance = server;
                                 tasks.push(self.update(Message::InstanceEdit));
                                 tasks.push(self.update(Message::UpdateMastodonInstance))
                             }
@@ -3425,20 +3436,27 @@ impl AppModel {
     }
 
     fn switch_instance(&self, instance: String) -> widget::Dialog<'_, Message> {
+        let valid = onboarding::normalize_server(&instance).is_ok();
         widget::dialog()
             .title(fl!("server-question"))
-            .body(fl!("server-description"))
+            .body(fl!("guest-server-description"))
             .icon(widget::icon::from_name("network-server-symbolic"))
             .control(
                 widget::text_input(fl!("server-url"), instance)
                     .on_input(|instance| {
                         Message::Dialog(DialogAction::Update(Dialog::SwitchInstance(instance)))
                     })
-                    .on_submit(|_| Message::Dialog(DialogAction::Complete)),
+                    .on_submit(move |_| {
+                        if valid {
+                            Message::Dialog(DialogAction::Complete)
+                        } else {
+                            Message::None
+                        }
+                    }),
             )
             .primary_action(
                 widget::button::suggested(fl!("confirm"))
-                    .on_press(Message::Dialog(DialogAction::Complete)),
+                    .on_press_maybe(valid.then_some(Message::Dialog(DialogAction::Complete))),
             )
             .secondary_action(
                 widget::button::standard(fl!("cancel"))
@@ -3775,9 +3793,24 @@ fn instance(instance: impl Into<String>) -> String {
         .trim_start_matches("http://")
         .trim_end_matches('/');
     if instance.is_empty() {
-        format!("https://{}", "mastodon.social")
+        // The guest default must allow unauthenticated public timelines.
+        // mastodon.social requires a signed-in user for these endpoints.
+        "https://mastodon.world".into()
     } else {
         format!("https://{}", instance)
+    }
+}
+
+#[cfg(test)]
+mod guest_tests {
+    use super::instance;
+
+    #[test]
+    fn guest_default_preserves_explicit_server_choices() {
+        assert_eq!(instance(""), "https://mastodon.world");
+        assert_eq!(instance("  "), "https://mastodon.world");
+        assert_eq!(instance("mastodon.social"), "https://mastodon.social");
+        assert_eq!(instance(" https://example.org/ "), "https://example.org");
     }
 }
 
