@@ -3,6 +3,7 @@ pub mod filters;
 pub mod html;
 pub mod profile;
 pub mod report;
+pub mod scroll;
 pub mod thread;
 
 use megalodon::entities::Poll;

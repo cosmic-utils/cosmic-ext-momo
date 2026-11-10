@@ -139,7 +139,10 @@ impl Thread {
                     .width(Length::Fill);
                 if has_replies {
                     if depth == 0 {
-                        branch = branch.push(widget::text::heading(fl!("reading-replies")));
+                        branch = branch.push(widget::id_container(
+                            widget::text::heading(fl!("reading-replies")),
+                            widget::Id::new("thread-replies"),
+                        ));
                     }
                     let toggle = app::Message::ToggleReplies(id.to_owned());
                     if cache.reading.collapsed_replies.contains(id) {

@@ -770,9 +770,13 @@ fn header<'a>(
 }
 
 fn content(status: &Status) -> Element<'_, Message> {
-    html::view(&status.content, |url| {
-        Message::InlineLink(status.id.clone(), url)
-    })
+    widget::id_container(
+        html::view(&status.content, |url| {
+            Message::InlineLink(status.id.clone(), url)
+        }),
+        widget::Id::new(format!("post-caption:{}", status.id)),
+    )
+    .into()
 }
 
 fn poll_view<'a>(

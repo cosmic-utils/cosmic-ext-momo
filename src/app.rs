@@ -132,6 +132,9 @@ pub struct AppModel {
     feed_scroll:
         HashMap<cosmic::iced::core::widget::Id, cosmic::iced::widget::scrollable::Viewport>,
     active_feed_scroll: Option<cosmic::iced::core::widget::Id>,
+    auto_comments: Option<u64>,
+    measure_comments: bool,
+    comment_animation: Option<(u64, f32, std::time::Instant)>,
     reader_request: u64,
     filter_request: u64,
     filters_loading: bool,
@@ -205,6 +208,10 @@ pub enum Message {
         cosmic::iced::core::widget::Id,
         cosmic::iced::widget::scrollable::Viewport,
     ),
+    MeasureComments,
+    CommentsMeasured(u64, reading::scroll::Geometry),
+    AnimateComments(std::time::Instant),
+    CancelCommentScroll,
     RetryReader,
     ToggleReplies(String),
     ProfileMore,
@@ -412,6 +419,9 @@ impl Application for AppModel {
             clearing_cache: false,
             feed_scroll: HashMap::new(),
             active_feed_scroll: None,
+            auto_comments: None,
+            measure_comments: false,
+            comment_animation: None,
             reader_request: 0,
             media_thread: None,
             media_details: true,
@@ -618,6 +628,9 @@ impl Application for AppModel {
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
+        self.auto_comments = None;
+        self.measure_comments = false;
+        self.comment_animation = None;
         self.main_page = None;
         self.context_history.clear();
         self.nav.activate(id);
@@ -1030,6 +1043,31 @@ impl Application for AppModel {
                 .then_some(Message::Status(status::Message::Menu(None)))
             }));
         }
+        if self.measure_comments {
+            subscriptions.push(cosmic::iced::window::frames().map(|_| Message::MeasureComments));
+        }
+        if self.comment_animation.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_millis(16))
+                    .map(Message::AnimateComments),
+            );
+        }
+        if self.auto_comments.is_some() {
+            subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
+                matches!(
+                    event,
+                    cosmic::iced::Event::Mouse(
+                        cosmic::iced::mouse::Event::WheelScrolled { .. }
+                            | cosmic::iced::mouse::Event::ButtonPressed(_)
+                    ) | cosmic::iced::Event::Keyboard(
+                        cosmic::iced::keyboard::Event::KeyPressed { .. }
+                    ) | cosmic::iced::Event::Touch(
+                        cosmic::iced::touch::Event::FingerPressed { .. }
+                    )
+                )
+                .then_some(Message::CancelCommentScroll)
+            }));
+        }
         if self.video.is_some() {
             subscriptions.push(
                 cosmic::iced::time::every(std::time::Duration::from_millis(33))
@@ -1215,6 +1253,9 @@ impl Application for AppModel {
                 self.feed_scroll.insert(id, viewport);
             }
             Message::BackContext => {
+                self.auto_comments = None;
+                self.measure_comments = false;
+                self.comment_animation = None;
                 if let Some(page) = self.context_history.pop() {
                     if let ContextPage::Social(social) = &page {
                         tasks.push(self.social.open(social.clone(), self.mastodon.clone()));
@@ -1238,6 +1279,57 @@ impl Application for AppModel {
                     ));
                 }
                 tasks.push(self.update_title());
+            }
+            Message::CancelCommentScroll => {
+                self.auto_comments = None;
+                self.measure_comments = false;
+                self.comment_animation = None;
+            }
+            Message::MeasureComments => {
+                self.measure_comments = false;
+                if let Some(thread) = &self.thread {
+                    if self.auto_comments == Some(thread.request) {
+                        let request = thread.request;
+                        tasks.push(
+                            cosmic::iced::advanced::widget::operate(reading::scroll::Measure::new(
+                                &thread.root,
+                            ))
+                            .map(move |geometry| {
+                                cosmic::Action::App(Message::CommentsMeasured(request, geometry))
+                            }),
+                        );
+                    }
+                }
+            }
+            Message::CommentsMeasured(request, geometry) => {
+                if self.auto_comments == Some(request) {
+                    if let Some(target) = geometry.target() {
+                        self.comment_animation = Some((request, target, std::time::Instant::now()));
+                    } else {
+                        self.auto_comments = None;
+                    }
+                }
+            }
+            Message::AnimateComments(now) => {
+                if let Some((request, target, started)) = self.comment_animation {
+                    if self.auto_comments == Some(request) {
+                        let (offset, done) = reading::scroll::animated_offset(
+                            target,
+                            now.saturating_duration_since(started),
+                        );
+                        tasks.push(cosmic::iced::widget::scrollable::scroll_to(
+                            widget::Id::new("main-scroll"),
+                            cosmic::iced::widget::scrollable::AbsoluteOffset {
+                                x: None,
+                                y: Some(offset),
+                            },
+                        ));
+                        if done {
+                            self.comment_animation = None;
+                            self.auto_comments = None;
+                        }
+                    }
+                }
             }
             Message::RetryReader => tasks.push(self.load_reader()),
             Message::ToggleReplies(id) => {
@@ -1296,6 +1388,9 @@ impl Application for AppModel {
                                 self.cache.insert_status(post);
                             }
                             tasks.push(cosmic::task::message(Message::Fetch(images)));
+                            if self.auto_comments == Some(request) {
+                                self.measure_comments = true;
+                            }
                         }
                         Err(error) => thread.error = Some(error),
                     }
@@ -2050,6 +2145,7 @@ impl Application for AppModel {
                     }
                     self.core.window.show_context = false;
                     tasks.push(self.load_reader());
+                    self.auto_comments = self.thread.as_ref().map(|thread| thread.request);
                     tasks.push(self.update_title());
                 } else {
                     self.core.window.show_context = false;
@@ -3206,6 +3302,9 @@ impl AppModel {
         self.confirm_clear_cache = false;
         self.clearing_cache = false;
         self.filter_request += 1;
+        self.auto_comments = None;
+        self.measure_comments = false;
+        self.comment_animation = None;
         self.feed_scroll.clear();
         self.active_feed_scroll = None;
         self.thread = None;
@@ -3842,6 +3941,9 @@ impl AppModel {
     }
 
     fn load_reader(&mut self) -> Task<Message> {
+        self.auto_comments = None;
+        self.measure_comments = false;
+        self.comment_animation = None;
         self.reader_request += 1;
         let request = self.reader_request;
         self.thread = None;
