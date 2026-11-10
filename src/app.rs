@@ -129,6 +129,9 @@ pub struct AppModel {
     video_url: Option<String>,
     gallery_image_url: Option<String>,
     video_failed: bool,
+    feed_scroll:
+        HashMap<cosmic::iced::core::widget::Id, cosmic::iced::widget::scrollable::Viewport>,
+    active_feed_scroll: Option<cosmic::iced::core::widget::Id>,
     reader_request: u64,
     filter_request: u64,
     filters_loading: bool,
@@ -198,6 +201,10 @@ pub enum Message {
     CacheCleared(Result<(), String>),
     StatusUpdated(Status),
     BackContext,
+    FeedScrolled(
+        cosmic::iced::core::widget::Id,
+        cosmic::iced::widget::scrollable::Viewport,
+    ),
     RetryReader,
     ToggleReplies(String),
     ProfileMore,
@@ -403,6 +410,8 @@ impl Application for AppModel {
             session_expired: false,
             confirm_clear_cache: false,
             clearing_cache: false,
+            feed_scroll: HashMap::new(),
+            active_feed_scroll: None,
             reader_request: 0,
             media_thread: None,
             media_details: true,
@@ -1201,6 +1210,10 @@ impl Application for AppModel {
                     self.cache.insert_status(status);
                 }
             }
+            Message::FeedScrolled(id, viewport) => {
+                self.active_feed_scroll = Some(id.clone());
+                self.feed_scroll.insert(id, viewport);
+            }
             Message::BackContext => {
                 if let Some(page) = self.context_history.pop() {
                     if let ContextPage::Social(social) = &page {
@@ -1210,6 +1223,19 @@ impl Application for AppModel {
                     tasks.push(self.load_reader());
                 } else {
                     self.main_page = None;
+                    let offset = self
+                        .active_feed_scroll
+                        .as_ref()
+                        .and_then(|id| self.feed_scroll.get(id))
+                        .map(|viewport| viewport.absolute_offset())
+                        .unwrap_or_default();
+                    tasks.push(cosmic::iced::widget::scrollable::scroll_to(
+                        cosmic::iced::core::widget::Id::new("main-scroll"),
+                        cosmic::iced::widget::scrollable::AbsoluteOffset {
+                            x: Some(offset.x),
+                            y: Some(offset.y),
+                        },
+                    ));
                 }
                 tasks.push(self.update_title());
             }
@@ -3180,6 +3206,8 @@ impl AppModel {
         self.confirm_clear_cache = false;
         self.clearing_cache = false;
         self.filter_request += 1;
+        self.feed_scroll.clear();
+        self.active_feed_scroll = None;
         self.thread = None;
         self.media_thread = None;
         self.profile = None;
@@ -3818,7 +3846,7 @@ impl AppModel {
         let request = self.reader_request;
         self.thread = None;
         self.profile = None;
-        match self.main_page.clone() {
+        let load = match self.main_page.clone() {
             Some(ContextPage::Status(id)) => {
                 self.thread = Some(reading::thread::Thread::new(request, id.clone()));
                 let client = self.mastodon.clone();
@@ -3842,7 +3870,17 @@ impl AppModel {
                 ])
             }
             _ => Task::none(),
-        }
+        };
+        Task::batch(vec![
+            load,
+            cosmic::iced::widget::scrollable::scroll_to(
+                cosmic::iced::core::widget::Id::new("main-scroll"),
+                cosmic::iced::widget::scrollable::AbsoluteOffset {
+                    x: Some(0.0),
+                    y: Some(0.0),
+                },
+            ),
+        ])
     }
 
     fn reader_view<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
@@ -3873,6 +3911,7 @@ impl AppModel {
                 )
                 .center_x(Length::Fill),
             )
+            .id(cosmic::iced::core::widget::Id::new("main-scroll"))
             .width(Length::Fill)
             .height(Length::Fill)
             .into();

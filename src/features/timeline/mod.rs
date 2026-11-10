@@ -93,6 +93,7 @@ pub struct Timeline {
 #[derive(Debug, Clone)]
 pub enum Message {
     SetClient(Client),
+    Scrolled(cosmic::iced::widget::scrollable::Viewport),
     Refresh,
     Recover,
     Retry,
@@ -294,7 +295,8 @@ impl Timeline {
             )
             .center_x(Length::Fill),
         )
-        .id(self.scroll_id())
+        .id(cosmic::iced::core::widget::Id::new("main-scroll"))
+        .on_scroll(Message::Scrolled)
         .direction(Direction::Vertical(Scrollbar::default()))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -310,7 +312,7 @@ impl Timeline {
     }
     fn top(&self) -> Task<app::Message> {
         cosmic::iced::widget::scrollable::snap_to(
-            self.scroll_id(),
+            cosmic::iced::core::widget::Id::new("main-scroll"),
             cosmic::iced::widget::scrollable::RelativeOffset {
                 x: Some(0.0),
                 y: Some(0.0),
@@ -329,6 +331,9 @@ impl Timeline {
         let paging_older = matches!(&message, Message::PageLoaded(..)) && self.older;
         match message {
             Message::SetClient(mastodon) => self.mastodon = mastodon,
+            Message::Scrolled(offset) => tasks.push(cosmic::task::message(
+                app::Message::FeedScrolled(self.scroll_id(), offset),
+            )),
             Message::Refresh if !self.loading => self.begin_load(false),
             Message::Recover => self.begin_load(false),
             Message::Retry if !self.loading => self.begin_load(self.older),
