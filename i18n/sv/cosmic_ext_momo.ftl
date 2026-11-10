@@ -1,4 +1,4 @@
-app-title = Toot
+app-title = Momo
 about = Om
 view = Visa
 

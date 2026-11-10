@@ -1,5 +1,5 @@
-name := 'cosmic-ext-toot'
-appid := 'dev.edfloreshz.Toot'
+name := 'cosmic-ext-momo'
+appid := 'dev.edfloreshz.Momo'
 
 rootdir := ''
 prefix := '/usr'

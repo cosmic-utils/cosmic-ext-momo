@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn video_decodes_seeks_replays_and_stops_on_drop() {
         gst::init().unwrap();
-        let path = std::env::temp_dir().join(format!("toot-video-{}.webm", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("momo-video-{}.webm", uuid::Uuid::new_v4()));
         let encoder = gst::parse::launch(&format!(
             "videotestsrc num-buffers=10 ! video/x-raw,width=32,height=24,framerate=10/1 ! vp8enc ! webmmux ! filesink location={}", path.display()
         )).unwrap();
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn unavailable_video_reports_error_and_stops_pipeline() {
-        let mut player = match Player::new("file:///nonexistent/toot-missing-video.webm", false) {
+        let mut player = match Player::new("file:///nonexistent/momo-missing-video.webm", false) {
             Ok(player) => player,
             Err(()) => return, // Synchronous failure is also surfaced by the viewer.
         };

@@ -17,7 +17,7 @@ pub struct Store {
 impl Default for Store {
     fn default() -> Self {
         Self {
-            root: dirs::data_local_dir().map(|dir| dir.join("dev.edfloreshz.Toot").join("drafts")),
+            root: dirs::data_local_dir().map(|dir| dir.join("dev.edfloreshz.Momo").join("drafts")),
             revisions: Default::default(),
             written: Default::default(),
         }

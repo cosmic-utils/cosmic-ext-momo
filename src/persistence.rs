@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn snapshots_repair_private_permissions_and_replace_content_atomically() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("toot-snapshot-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("momo-snapshot-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("home.json");
         std::fs::write(&path, b"[1]").unwrap();
@@ -374,7 +374,7 @@ mod tests {
     }
     #[test]
     fn image_cache_removes_old_downloads_to_stay_within_its_byte_budget() {
-        let root = std::env::temp_dir().join(format!("toot-images-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("momo-images-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         for (index, name) in ["old", "recent", "new"].iter().enumerate() {
             let path = root.join(name);
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn an_image_download_from_before_cleanup_cannot_write_back_to_disk() {
-        let root = std::env::temp_dir().join(format!("toot-image-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("momo-image-test-{}", uuid::Uuid::new_v4()));
         let path = root.join("image");
         save_image_at(path.clone(), b"old", image_epoch().wrapping_sub(1));
         assert!(!path.exists());
@@ -408,7 +408,7 @@ mod tests {
     }
     #[test]
     fn cache_cleanup_is_account_scoped_and_preserves_drafts_and_other_accounts() {
-        let root = std::env::temp_dir().join(format!("toot-cache-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("momo-cache-test-{}", uuid::Uuid::new_v4()));
         let cache = root.join("cache");
         let alice = "https://example.org#alice";
         let bob = "https://example.org#bob";

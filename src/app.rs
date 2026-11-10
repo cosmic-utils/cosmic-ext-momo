@@ -2,7 +2,7 @@
 
 use crate::cache::Cache;
 use crate::client::{Client, Session, Sessions};
-use crate::config::TootConfig;
+use crate::config::MomoConfig;
 use crate::features::compose;
 use crate::features::timeline::{Timeline, TimelineKind};
 use crate::features::{
@@ -31,8 +31,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 const MAX_CONCURRENT_IMAGE_FETCHES: usize = 6;
 use std::fmt::Display;
 
-const REPOSITORY: &str = "https://github.com/edfloreshz/toot";
-const SUPPORT: &str = "https://github.com/edfloreshz/toot/issues";
+const REPOSITORY: &str = "https://github.com/cosmic-utils/cosmic-ext-momo";
+const SUPPORT: &str = "https://github.com/cosmic-utils/cosmic-ext-momo/issues";
 
 /// A nav-bar destination. Some variants are not yet backed by a feature — see
 /// `view`/`on_nav_select`/`subscription`'s fallback arms.
@@ -152,7 +152,7 @@ pub struct AppModel {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     dialog_pages: VecDeque<Dialog>,
     dialog_editor: widget::text_editor::Content,
-    config: TootConfig,
+    config: MomoConfig,
     handler: Option<cosmic_config::Config>,
     instance: String,
     onboarding: Option<onboarding::State>,
@@ -231,7 +231,7 @@ pub enum Message {
     Open(String),
     ToggleContextPage(ContextPage),
     ToggleContextDrawer,
-    UpdateConfig(TootConfig),
+    UpdateConfig(MomoConfig),
     InstanceEdit,
     Home(timeline::Message),
     Notifications(notifications::Message),
@@ -326,7 +326,7 @@ pub enum Dialog {
 }
 
 pub struct Flags {
-    pub config: TootConfig,
+    pub config: MomoConfig,
     pub handler: Option<cosmic_config::Config>,
 }
 
@@ -334,7 +334,7 @@ impl Application for AppModel {
     type Executor = cosmic::executor::multi::Executor;
     type Flags = Flags;
     type Message = Message;
-    const APP_ID: &'static str = "dev.edfloreshz.Toot";
+    const APP_ID: &'static str = "dev.edfloreshz.Momo";
 
     fn core(&self) -> &Core {
         &self.core
@@ -588,7 +588,7 @@ impl Application for AppModel {
 
         vec![
             menu_bar.into(),
-            widget::text::heading(self.nav.text(self.nav.active()).unwrap_or("Toot"))
+            widget::text::heading(self.nav.text(self.nav.active()).unwrap_or("Momo"))
                 .wrapping(cosmic::iced::core::text::Wrapping::None)
                 .ellipsize(cosmic::iced::core::text::Ellipsize::End(
                     cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
@@ -1022,7 +1022,7 @@ impl Application for AppModel {
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subscriptions = vec![self
             .core()
-            .watch_config::<TootConfig>(Self::APP_ID)
+            .watch_config::<MomoConfig>(Self::APP_ID)
             .map(|update| Message::UpdateConfig(update.config))];
 
         if self.onboarding.is_some() {
@@ -3567,7 +3567,7 @@ impl AppModel {
         self.config = session
             .as_ref()
             .and_then(|session| session.preferences.clone())
-            .unwrap_or_else(|| TootConfig {
+            .unwrap_or_else(|| MomoConfig {
                 server: self.config.server.clone(),
                 ..Default::default()
             });

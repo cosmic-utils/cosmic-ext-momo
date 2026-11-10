@@ -75,7 +75,7 @@ impl Client {
             megalodon::SNS::Mastodon,
             base_url.clone(),
             token.clone(),
-            Some("toot".to_string()),
+            Some("momo".to_string()),
         )
         .expect("failed to create megalodon client");
         Self {
@@ -127,7 +127,7 @@ pub struct Session {
     #[serde(default)]
     pub acct: String,
     #[serde(default)]
-    pub preferences: Option<crate::config::TootConfig>,
+    pub preferences: Option<crate::config::MomoConfig>,
 }
 
 /// All accounts saved in the keychain, and which one is active. Persisted as
@@ -304,7 +304,7 @@ mod tests {
     }
     #[test]
     fn saved_preferences_from_before_onboarding_are_compatible() {
-        let preferences: crate::config::TootConfig = serde_json::from_value(serde_json::json!({
+        let preferences: crate::config::MomoConfig = serde_json::from_value(serde_json::json!({
             "server": "example.org", "hide_boosts": true, "hide_replies": false,
             "feed_density": "Compact", "theme_mode": "Dark"
         }))

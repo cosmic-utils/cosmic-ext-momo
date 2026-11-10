@@ -76,7 +76,7 @@ impl Activity {
 }
 fn path(account: &str) -> Option<std::path::PathBuf> {
     let mut path = dirs::data_local_dir()?
-        .join("dev.edfloreshz.Toot")
+        .join("dev.edfloreshz.Momo")
         .join("activity");
     for chunk in account.as_bytes().chunks(64) {
         path.push(
@@ -120,15 +120,15 @@ async fn send(connection: &zbus::Connection, summary: String) -> Result<(), ()> 
     let mut hints = std::collections::HashMap::<&str, zbus::zvariant::Value<'_>>::new();
     hints.insert(
         "desktop-entry",
-        zbus::zvariant::Value::from("dev.edfloreshz.Toot"),
+        zbus::zvariant::Value::from("dev.edfloreshz.Momo"),
     );
     let _: u32 = proxy
         .call(
             "Notify",
             &(
-                "Toot",
+                "Momo",
                 0u32,
-                "dev.edfloreshz.Toot",
+                "dev.edfloreshz.Momo",
                 summary,
                 "",
                 Vec::<String>::new(),
@@ -269,7 +269,7 @@ mod dbus_tests {
                 Some((
                     "Alice — Mention".into(),
                     String::new(),
-                    "dev.edfloreshz.Toot".into()
+                    "dev.edfloreshz.Momo".into()
                 ))
             );
         });

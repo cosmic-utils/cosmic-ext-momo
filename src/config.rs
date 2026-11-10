@@ -12,7 +12,7 @@ use crate::app::AppModel;
 )]
 #[serde(default)]
 #[version = 1]
-pub struct TootConfig {
+pub struct MomoConfig {
     pub server: String,
     /// First-run setup was completed or public browsing was chosen.
     pub onboarding_completed: bool,
@@ -84,20 +84,20 @@ impl FeedDensity {
     }
 }
 
-impl TootConfig {
+impl MomoConfig {
     pub fn config_handler() -> Option<Config> {
-        Config::new(AppModel::APP_ID, TootConfig::VERSION).ok()
+        Config::new(AppModel::APP_ID, MomoConfig::VERSION).ok()
     }
 
-    pub fn config() -> TootConfig {
+    pub fn config() -> MomoConfig {
         match Self::config_handler() {
             Some(config_handler) => {
-                TootConfig::get_entry(&config_handler).unwrap_or_else(|(errs, config)| {
+                MomoConfig::get_entry(&config_handler).unwrap_or_else(|(errs, config)| {
                     tracing::error!("errors loading config: {:?}", errs);
                     config
                 })
             }
-            None => TootConfig::default(),
+            None => MomoConfig::default(),
         }
     }
 }

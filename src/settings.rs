@@ -1,7 +1,7 @@
 use cosmic::{app::Settings, iced::Limits};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{app::Flags, config::TootConfig, i18n};
+use crate::{app::Flags, config::MomoConfig, i18n};
 
 pub fn init() {
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
@@ -17,13 +17,13 @@ pub fn init() {
 }
 
 pub fn settings() -> Settings {
-    let theme = TootConfig::config().theme_mode.theme();
+    let theme = MomoConfig::config().theme_mode.theme();
     Settings::default()
         .size_limits(Limits::NONE.min_width(360.0).min_height(180.0))
         .theme(theme)
 }
 
 pub fn flags() -> Flags {
-    let (config, handler) = (TootConfig::config(), TootConfig::config_handler());
+    let (config, handler) = (MomoConfig::config(), MomoConfig::config_handler());
     Flags { config, handler }
 }

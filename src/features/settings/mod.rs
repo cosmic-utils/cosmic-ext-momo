@@ -3,7 +3,7 @@
 use cosmic::{widget, Element};
 
 use crate::client::Session;
-use crate::config::{FeedDensity, ThemeMode, TootConfig};
+use crate::config::{FeedDensity, MomoConfig, ThemeMode};
 use crate::fl;
 
 #[derive(Debug, Clone)]
@@ -23,7 +23,7 @@ pub enum Message {
 }
 
 pub fn view<'a>(
-    config: &'a TootConfig,
+    config: &'a MomoConfig,
     sessions: &'a [Session],
     active: usize,
     confirm_clear: bool,

@@ -25,14 +25,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: desktop-file-validate res/app.desktop
-      - run: appstreamcli validate --no-net res/dev.edfloreshz.Toot.metainfo.xml
+      - run: appstreamcli validate --no-net res/dev.edfloreshz.Momo.metainfo.xml
       - run: cargo check --locked --all-targets
       - run: cargo test --locked
       - run: cargo build --locked
       - name: Check staged installation
         run: |
           cargo install just --locked
-          just profile=debug rootdir="$RUNNER_TEMP/toot-stage" prefix=/usr install
-          test -x "$RUNNER_TEMP/toot-stage/usr/bin/cosmic-ext-toot"
-          test -f "$RUNNER_TEMP/toot-stage/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Toot.svg"
-          test -f "$RUNNER_TEMP/toot-stage/usr/share/metainfo/dev.edfloreshz.Toot.metainfo.xml"
+          just profile=debug rootdir="$RUNNER_TEMP/momo-stage" prefix=/usr install
+          test -x "$RUNNER_TEMP/momo-stage/usr/bin/cosmic-ext-momo"
+          test -f "$RUNNER_TEMP/momo-stage/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Momo.svg"
+          test -f "$RUNNER_TEMP/momo-stage/usr/share/metainfo/dev.edfloreshz.Momo.metainfo.xml"

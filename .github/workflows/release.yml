@@ -38,7 +38,7 @@ jobs:
       - name: Validate and build
         run: |
           desktop-file-validate res/app.desktop
-          appstreamcli validate --no-net res/dev.edfloreshz.Toot.metainfo.xml
+          appstreamcli validate --no-net res/dev.edfloreshz.Momo.metainfo.xml
           cargo test --locked
           cargo build --release --locked
           cargo install just --locked
@@ -55,19 +55,19 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          appdir="$RUNNER_TEMP/Toot.AppDir"
+          appdir="$RUNNER_TEMP/Momo.AppDir"
           just rootdir="$appdir" prefix=/usr install
-          install -Dm0644 LICENSE "$appdir/usr/share/licenses/cosmic-ext-toot/LICENSE"
+          install -Dm0644 LICENSE "$appdir/usr/share/licenses/cosmic-ext-momo/LICENSE"
           mkdir -p dist
           cd dist
           export VERSION="${RELEASE_TAG//\//-}"
           export ARCH=x86_64
-          export OUTPUT="Toot-${VERSION}-${ARCH}.AppImage"
-          export LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Toot-*-${ARCH}.AppImage.zsync"
+          export OUTPUT="Momo-${VERSION}-${ARCH}.AppImage"
+          export LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Momo-*-${ARCH}.AppImage.zsync"
           "$RUNNER_TEMP/appimage-tools/linuxdeploy-x86_64.AppImage" \
             --appdir "$appdir" \
-            --desktop-file "$appdir/usr/share/applications/dev.edfloreshz.Toot.desktop" \
-            --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Toot.svg" \
+            --desktop-file "$appdir/usr/share/applications/dev.edfloreshz.Momo.desktop" \
+            --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Momo.svg" \
             --plugin gstreamer \
             --output appimage
           test -s "$OUTPUT"
@@ -79,15 +79,15 @@ jobs:
           cd dist
           sha256sum --check SHA256SUMS
           image="$(realpath -- ./*.AppImage)"
-          expected_update_info="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Toot-*-x86_64.AppImage.zsync"
+          expected_update_info="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Momo-*-x86_64.AppImage.zsync"
           readelf --string-dump=.upd_info "$image" | grep -F -- "$expected_update_info"
           grep -Fx -- "Filename: $(basename "$image")" "$image.zsync"
           mkdir -p "$RUNNER_TEMP/appimage-check"
           cd "$RUNNER_TEMP/appimage-check"
           "$image" --appimage-extract > /dev/null
           test -x squashfs-root/AppRun
-          test -x squashfs-root/usr/bin/cosmic-ext-toot
-          test -f squashfs-root/usr/share/metainfo/dev.edfloreshz.Toot.metainfo.xml
+          test -x squashfs-root/usr/bin/cosmic-ext-momo
+          test -f squashfs-root/usr/share/metainfo/dev.edfloreshz.Momo.metainfo.xml
           test -f squashfs-root/usr/lib/gstreamer-1.0/libgstvpx.so
           test -f squashfs-root/usr/lib/gstreamer-1.0/libgstlibav.so
       - name: Publish release

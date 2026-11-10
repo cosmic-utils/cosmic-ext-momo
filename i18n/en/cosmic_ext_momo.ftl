@@ -1,4 +1,4 @@
-app-title = Toot
+app-title = Momo
 about = About
 view = View
 
@@ -60,18 +60,18 @@ delete-status-description = This cannot be undone.
 delete = Delete
 
 ## Welcome and account setup
-setup-welcome = Welcome to Toot
+setup-welcome = Welcome to Momo
 setup-welcome-description = Connect your Mastodon account to read, post, and join conversations. You can add more accounts now or later in Settings.
 setup-add-account = Add an account
 setup-browse = Browse public posts
 setup-server-title = Choose your server
-setup-server-description = Enter the server where you already have a Mastodon account, such as mastodon.social. You will sign in securely in your browser. Toot does not ask for your password.
-setup-authorize-description = Authorize Toot in your browser, then paste the authorization code below. Your account will be verified before it is saved in the system keychain.
+setup-server-description = Enter the server where you already have a Mastodon account, such as mastodon.social. You will sign in securely in your browser. Momo does not ask for your password.
+setup-authorize-description = Authorize Momo in your browser, then paste the authorization code below. Your account will be verified before it is saved in the system keychain.
 setup-open-browser = Open authorization page
 setup-retry = Retry
 setup-account-ready = Account connected
 setup-choose-account = Choose the account to use when you continue.
-setup-more-accounts = You can connect another account, including one on the same server, or start using Toot.
+setup-more-accounts = You can connect another account, including one on the same server, or start using Momo.
 setup-add-another = Add another account
 setup-working = Connecting…
 setup-back = Back
@@ -159,7 +159,7 @@ compose-discard = Discard draft
 compose-storage-error = Could not save your drafts. Your writing is still open. Check that your data directory is writable and try again.
 compose-file-error = Could not read this image. Choose the file again.
 compose-image-too-large = This image exceeds your server’s size limit.
-compose-image-type = This image format is not supported by Toot or your server. Choose a PNG, JPEG, GIF, or WebP image.
+compose-image-type = This image format is not supported by Momo or your server. Choose a PNG, JPEG, GIF, or WebP image.
 compose-limits-error = Could not load your server’s posting limits. Standard limits will be used until you reconnect.
 compose-edit-error = Could not load the original text for editing. Check your connection and retry.
 compose-alt-error = Could not save the image descriptions. Your draft is preserved; retry before publishing.
@@ -341,7 +341,7 @@ media-view-profile = View profile
 media-open-attachment = Open attachment
 
 desktop-alerts = Desktop notifications
-desktop-alerts-help = Show alerts for your active account while Toot is running. Alerts never include post or private-message content. Your desktop’s notification settings also apply.
+desktop-alerts-help = Show alerts for your active account while Momo is running. Alerts never include post or private-message content. Your desktop’s notification settings also apply.
 
 profile-edit = Edit profile
 profile-display-name = Display name
@@ -370,7 +370,7 @@ poll-day = 1 day
 poll-week = 1 week
 poll-help = Poll options must be different, non-empty, and within your server’s limits. Polls cannot be combined with attachments.
 compose-schedule = Schedule post
-schedule-help = Leave empty to post now. Otherwise use local time at least five minutes ahead. Your server publishes scheduled posts even when Toot is closed.
+schedule-help = Leave empty to post now. Otherwise use local time at least five minutes ahead. Your server publishes scheduled posts even when Momo is closed.
 compose-scheduled = Post scheduled.
 list-title = List name
 list-save = Save list

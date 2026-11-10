@@ -473,7 +473,7 @@ fn cache_pruning_preserves_boost_originals_reader_posts_and_deletion_tombstones(
 
 #[test]
 fn scoped_snapshots_preserve_the_selected_feed_and_its_current_content() {
-    let root = std::env::temp_dir().join(format!("toot-scopes-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("momo-scopes-{}", uuid::Uuid::new_v4()));
     for kind in [
         TimelineKind::Tag("rust".into()),
         TimelineKind::List("friends".into()),

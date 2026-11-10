@@ -1,10 +1,10 @@
 [Desktop Entry]
-Name=Toot
+Name=Momo
 Comment=Your corner of the fediverse
-Exec=cosmic-ext-toot
+Exec=cosmic-ext-momo
 Terminal=false
 Type=Application
 StartupNotify=true
-Icon=dev.edfloreshz.Toot
+Icon=dev.edfloreshz.Momo
 Categories=Network;X-COSMIC;
-Keywords=toot;mastodon;fediverse;
+Keywords=momo;mastodon;fediverse;

@@ -16,7 +16,7 @@ fn post(visibility: StatusVisibility) -> Status {
 struct Temporary(std::path::PathBuf);
 impl Temporary {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("toot-compose-test-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("momo-compose-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }

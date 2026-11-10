@@ -287,7 +287,7 @@ impl State {
         match self.step {
             Step::Welcome => {
                 content = content
-                    .push(widget::icon::from_name("dev.edfloreshz.Toot").size(96))
+                    .push(widget::icon::from_name("dev.edfloreshz.Momo").size(96))
                     .push(widget::text::title1(fl!("setup-welcome")))
                     .push(widget::text(fl!("setup-welcome-description")))
                     .push(
@@ -460,7 +460,7 @@ pub async fn register(request: Request, server: String) -> Message {
             ..Default::default()
         };
         let registration = client
-            .register_app("Toot".into(), &options)
+            .register_app("Momo".into(), &options)
             .await
             .map_err(|_| Failure::Registration)?;
         if !registration
@@ -534,7 +534,7 @@ mod tests {
     fn registration() -> AppData {
         let mut data = AppData::new(
             "1".into(),
-            "Toot".into(),
+            "Momo".into(),
             None,
             None,
             "client".into(),

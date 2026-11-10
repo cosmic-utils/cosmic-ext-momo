@@ -26,7 +26,7 @@ pub struct Cache {
     /// which statuses/relationships belong to the current user (e.g. to
     /// show a delete action only on your own posts).
     pub me: Option<Account>,
-    /// Timeline display preferences from [`crate::config::TootConfig`],
+    /// Timeline display preferences from [`crate::config::MomoConfig`],
     /// snapshotted here since it's already threaded through every feature's
     /// `view(&Cache)` call.
     pub hide_boosts: bool,
