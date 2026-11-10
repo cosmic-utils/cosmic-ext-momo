@@ -163,12 +163,8 @@ impl Cache {
                 *status = current.clone();
             }
         }
-        let status = notification.status.clone();
         self.notifications
             .insert(notification.id.to_string(), notification);
-        if let Some(status) = status {
-            self.insert_status(status);
-        }
         self.dirty = true;
     }
 

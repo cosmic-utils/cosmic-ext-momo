@@ -463,8 +463,10 @@ fn private_messages_require_recipients_and_drafts_keep_poll_and_schedule_state()
 
 #[test]
 fn interrupted_uploads_are_retryable_after_restoring_a_draft() {
-    let mut state = State::default();
-    state.text = "Photo".into();
+    let mut state = State {
+        text: "Photo".into(),
+        ..Default::default()
+    };
     let mut media = Media {
         id: uuid::Uuid::new_v4().to_string(),
         name: "photo.png".into(),
@@ -510,7 +512,7 @@ fn delayed_autosaves_cannot_overwrite_a_durable_save_or_restore_a_deleted_draft(
     store.save("account", &[current]).unwrap();
     store
         .clone()
-        .save_reserved("account", &[old.clone()], delayed)
+        .save_reserved("account", std::slice::from_ref(&old), delayed)
         .unwrap();
     assert_eq!(store.load("account").unwrap()[0].text, "Latest");
     let delayed = store.reserve_save();

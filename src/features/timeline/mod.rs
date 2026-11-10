@@ -55,10 +55,17 @@ impl TimelineKind {
             TimelineKind::Federated => "federated".to_string(),
             TimelineKind::Favorites => "favorites".to_string(),
             TimelineKind::Bookmarks => "bookmarks".to_string(),
-            TimelineKind::Tag(name) => format!("tag-{name}"),
-            TimelineKind::List(id) => format!("list-{id}"),
+            TimelineKind::Tag(name) => scoped_slug("tag", name),
+            TimelineKind::List(id) => scoped_slug("list", id),
         }
     }
+}
+
+fn scoped_slug(prefix: &str, value: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hash);
+    format!("{prefix}-{:016x}", hash.finish())
 }
 
 /// State for a single feed-shaped timeline.
