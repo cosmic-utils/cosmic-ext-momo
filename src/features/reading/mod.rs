@@ -13,6 +13,7 @@ pub struct State {
     pub post_menu: Option<String>,
     pub warnings: HashSet<String>,
     pub media: HashSet<String>,
+    pub collapsed_replies: HashSet<String>,
     pub filter_reveals: HashSet<(String, filters::Context)>,
     pub filters: filters::Filters,
     pub polls: HashMap<String, Poll>,
@@ -33,6 +34,7 @@ impl State {
             post_menu: None,
             warnings: HashSet::new(),
             media: HashSet::new(),
+            collapsed_replies: HashSet::new(),
             filter_reveals: HashSet::new(),
             filters: if authenticated {
                 filters::Filters::Loading

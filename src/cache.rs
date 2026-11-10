@@ -214,6 +214,9 @@ impl Cache {
         self.reading.warnings.retain(|id| statuses.contains(id));
         self.reading.media.retain(|id| statuses.contains(id));
         self.reading
+            .collapsed_replies
+            .retain(|id| statuses.contains(id));
+        self.reading
             .filter_reveals
             .retain(|(id, _)| statuses.contains(id));
         self.reading.polls.retain(|id, _| polls.contains(id));

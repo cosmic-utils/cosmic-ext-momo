@@ -119,9 +119,13 @@ pub fn account<'a>(account: &'a Account, cache: &'a Cache) -> Element<'a, Messag
     .width(Length::Fill)
     .spacing(spacing.space_xs);
 
-    widget::settings::flex_item_row(vec![content.into()])
-        .padding(spacing.space_xs)
-        .into()
+    widget::container(
+        widget::settings::flex_item_row(vec![content.into()]).padding(spacing.space_xs),
+    )
+    .width(Length::Fill)
+    .padding(spacing.space_s)
+    .class(cosmic::style::Container::Card)
+    .into()
 }
 
 fn relationship_actions<'a>(

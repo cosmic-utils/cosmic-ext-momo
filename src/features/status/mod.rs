@@ -156,9 +156,13 @@ pub fn status<'a>(
                 .on_press(Message::ToggleWarning(status.id.clone())),
             );
         if !cache.reading.content_visible(status) {
-            return post
-                .padding(if density == FeedDensity::Full { 16 } else { 12 })
-                .into();
+            return conversation_card(
+                post.padding(if density == FeedDensity::Full { 16 } else { 12 })
+                    .width(Length::Fill)
+                    .into(),
+                status,
+                options,
+            );
         }
     }
     post = post.push(content(status));
@@ -193,15 +197,52 @@ pub fn status<'a>(
     post = post
         .push_maybe(tags(status, options))
         .push_maybe(actions(status, options, cache));
-    if options.expand {
-        post = post.push(
-            widget::button::link(fl!("reading-conversation"))
-                .on_press(Message::ExpandStatus(status.id.clone())),
-        );
+    conversation_card(
+        post.padding(if density == FeedDensity::Full { 16 } else { 12 })
+            .width(Length::Fill)
+            .into(),
+        status,
+        options,
+    )
+}
+
+fn conversation_card<'a>(
+    content: Element<'a, Message>,
+    status: &Status,
+    options: StatusOptions,
+) -> Element<'a, Message> {
+    if !options.expand {
+        return content;
     }
-    post.padding(if density == FeedDensity::Full { 16 } else { 12 })
+    use cosmic::widget::button::Catalog;
+    // Buttons let embedded links and controls handle their own events first.
+    let button = widget::button::custom(content)
+        .padding(0)
         .width(Length::Fill)
-        .into()
+        .class(cosmic::style::Button::Custom {
+            active: Box::new(|focused, theme| {
+                inherit_post_colors(theme.active(focused, false, &cosmic::style::Button::Image))
+            }),
+            hovered: Box::new(|focused, theme| {
+                inherit_post_colors(theme.hovered(focused, false, &cosmic::style::Button::Image))
+            }),
+            pressed: Box::new(|focused, theme| {
+                inherit_post_colors(theme.pressed(focused, false, &cosmic::style::Button::Image))
+            }),
+            disabled: Box::new(|theme| {
+                inherit_post_colors(theme.disabled(&cosmic::style::Button::Image))
+            }),
+        })
+        .on_press(Message::ExpandStatus(status.id.clone()));
+    #[cfg(target_os = "linux")]
+    let button = button.name(fl!("reading-conversation"));
+    button.into()
+}
+
+fn inherit_post_colors(mut style: cosmic::widget::button::Style) -> cosmic::widget::button::Style {
+    style.text_color = None;
+    style.icon_color = None;
+    style
 }
 
 fn card<'a>(
@@ -230,6 +271,10 @@ fn card<'a>(
                     .content_fit(cosmic::iced::ContentFit::Cover)
             } else {
                 handle
+                    .width(Length::Fill)
+                    .height(360.0)
+                    .expand(true)
+                    .content_fit(cosmic::iced::ContentFit::Cover)
             }
         });
 
@@ -248,7 +293,7 @@ fn card<'a>(
                 .width(Length::Fill)
                 .into()
         } else {
-            widget::column![avatar, text].into()
+            widget::column![avatar, text].width(Length::Fill).into()
         };
 
         content

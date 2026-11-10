@@ -244,3 +244,60 @@ fn report_payload_preserves_target_and_only_forwards_remote_accounts() {
     report.sending = true;
     assert!(!report.can_submit());
 }
+
+#[test]
+fn thread_groups_nested_replies_and_keeps_sibling_order() {
+    let mut cache = Cache::new();
+    for (id, parent) in [
+        ("root", None),
+        ("a", Some("root")),
+        ("b", Some("root")),
+        ("a1", Some("a")),
+        ("a2", Some("a")),
+        ("deep", Some("a1")),
+    ] {
+        let mut status = post(id, id);
+        status.in_reply_to_id = parent.map(str::to_owned);
+        cache.insert_status(status);
+    }
+    let mut thread = thread::Thread::new(1, "root".into());
+    thread.descendants = ["a", "b", "a1", "a2", "deep"].map(str::to_owned).to_vec();
+    assert_eq!(
+        thread.reply_tree(&cache),
+        vec![
+            ("root", 0),
+            ("a", 1),
+            ("a1", 2),
+            ("deep", 3),
+            ("a2", 2),
+            ("b", 1)
+        ]
+    );
+
+    // Opening a comment focuses its subtree, independent of the previous page's ancestors.
+    let mut child = thread::Thread::new(2, "a".into());
+    child.ancestors = vec!["root".into()];
+    child.descendants = ["a1", "a2", "deep"].map(str::to_owned).to_vec();
+    assert_eq!(
+        child.reply_tree(&cache),
+        vec![("a", 0), ("a1", 1), ("deep", 2), ("a2", 1)]
+    );
+}
+
+#[test]
+fn thread_handles_missing_parents_duplicates_and_cycles_without_losing_replies() {
+    let mut cache = Cache::new();
+    for (id, parent) in [("orphan", "missing"), ("a", "b"), ("b", "a")] {
+        let mut status = post(id, id);
+        status.in_reply_to_id = Some(parent.into());
+        cache.insert_status(status);
+    }
+    let mut thread = thread::Thread::new(1, "root".into());
+    thread.descendants = ["orphan", "a", "b", "a", "root"]
+        .map(str::to_owned)
+        .to_vec();
+    assert_eq!(
+        thread.reply_tree(&cache),
+        vec![("root", 0), ("orphan", 1), ("a", 1), ("b", 2)]
+    );
+}

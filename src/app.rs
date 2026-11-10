@@ -199,6 +199,7 @@ pub enum Message {
     StatusUpdated(Status),
     BackContext,
     RetryReader,
+    ToggleReplies(String),
     ProfileMore,
     ThreadLoaded(u64, Result<(Status, megalodon::entities::Context), String>),
     ProfileLoaded(u64, Result<(Vec<Status>, Vec<Status>), String>),
@@ -1213,6 +1214,11 @@ impl Application for AppModel {
                 tasks.push(self.update_title());
             }
             Message::RetryReader => tasks.push(self.load_reader()),
+            Message::ToggleReplies(id) => {
+                if !self.cache.reading.collapsed_replies.remove(&id) {
+                    self.cache.reading.collapsed_replies.insert(id);
+                }
+            }
             Message::ProfileMore => {
                 if let Some(profile) = &mut self.profile {
                     if !profile.loading {
@@ -1964,9 +1970,7 @@ impl Application for AppModel {
                 if !reading::html::web_url(&url) {
                     return Task::none();
                 }
-                if let Err(err) = open::that_detached(url) {
-                    tracing::error!("{err}")
-                }
+                tasks.push(self.open_browser(url, false));
             }
             Message::ToggleContextPage(context_page) => {
                 if matches!(
@@ -2291,6 +2295,34 @@ impl Application for AppModel {
 }
 
 impl AppModel {
+    fn open_browser(&self, url: String, onboarding: bool) -> Task<Message> {
+        #[cfg(target_os = "linux")]
+        let token = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            cosmic::iced::platform_specific::shell::wayland::commands::activation::request_token(
+                Some(Self::APP_ID.to_owned()),
+                self.core.main_window_id(),
+            )
+        } else {
+            cosmic::iced::Task::done(None)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let token = cosmic::iced::Task::done(None::<String>);
+
+        token.then(move |token| {
+            let url = url.clone();
+            cosmic::task::future(async move {
+                let result =
+                    tokio::task::spawn_blocking(move || launch_browser(&url, token.as_deref()))
+                        .await;
+                match result {
+                    Ok(Ok(())) => Message::None,
+                    _ if onboarding => Message::Onboarding(onboarding::Message::BrowserFailed),
+                    _ => Message::Error(fl!("action-error")),
+                }
+            })
+        })
+    }
+
     fn sync_video(&mut self) {
         let attachment = match self.dialog_pages.front() {
             Some(Dialog::Media(items, index, _)) => items.get(*index).filter(|item| item.video),
@@ -3041,13 +3073,7 @@ impl AppModel {
             Effect::Verify(request, client) => cosmic::task::future(async move {
                 Message::Onboarding(onboarding::verify(request, client).await)
             }),
-            Effect::OpenBrowser(url) => {
-                if open::that_detached(url).is_err() {
-                    cosmic::task::message(Message::Onboarding(onboarding::Message::BrowserFailed))
-                } else {
-                    Task::none()
-                }
-            }
+            Effect::OpenBrowser(url) => self.open_browser(url, true),
             Effect::Save(request, mut client, account) => {
                 client.account_id = account.id.clone();
                 let result = self.save_setup_account(&client, &account);
@@ -3831,14 +3857,26 @@ impl AppModel {
                 view = view.push(widget::text::title3(page.title()));
             }
         }
-        let content = if matches!(
+        if matches!(
             self.main_page,
             Some(ContextPage::Account(_) | ContextPage::Status(_))
         ) {
-            widget::scrollable(content).height(Length::Fill).into()
-        } else {
-            content
-        };
+            return widget::scrollable(
+                widget::container(
+                    widget::container(
+                        view.push(content)
+                            .spacing(crate::ui::GAP)
+                            .width(Length::Fill),
+                    )
+                    .max_width(crate::ui::CONTENT_WIDTH)
+                    .padding(16),
+                )
+                .center_x(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        }
         view.push(content)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -3855,6 +3893,25 @@ impl AppModel {
     fn account<'a>(&'a self, account: &'a Account) -> Element<'a, Message> {
         accounts::account(account, &self.cache).map(Message::Account)
     }
+}
+
+/// Pass activation only to the launch helpers, without changing the app's environment.
+fn launch_browser(url: &str, token: Option<&str>) -> std::io::Result<()> {
+    let mut last_error = std::io::Error::other("No browser launcher available");
+    for mut command in open::commands(url) {
+        if let Some(token) = token {
+            command.env("XDG_ACTIVATION_TOKEN", token);
+            command.env("DESKTOP_STARTUP_ID", token);
+        }
+        match command.status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => {
+                last_error = std::io::Error::other(format!("Browser launcher exited with {status}"))
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 /// Fetch the authenticated account and the instance's status length limit,

@@ -410,3 +410,6 @@ compose-retry-upload = Retry upload
 
 media-show-details = Show post and replies
 media-hide-details = Hide post and replies
+
+reading-collapse-replies = Collapse replies
+reading-expand-replies = Show replies

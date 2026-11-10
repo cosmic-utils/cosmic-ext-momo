@@ -94,12 +94,16 @@ impl Profile {
                         continue;
                     }
                     items = items.push(
-                        status::status(
-                            post,
-                            StatusOptions::all().context(filters::Context::Account),
-                            cache,
+                        widget::container(
+                            status::status(
+                                post,
+                                StatusOptions::all().context(filters::Context::Account),
+                                cache,
+                            )
+                            .map(app::Message::Status),
                         )
-                        .map(app::Message::Status),
+                        .width(cosmic::iced::Length::Fill)
+                        .class(cosmic::style::Container::Card),
                     );
                 }
             }
