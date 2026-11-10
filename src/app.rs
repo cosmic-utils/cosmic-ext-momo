@@ -401,7 +401,7 @@ impl Application for AppModel {
 
         let about = About::default()
             .name(fl!("app-title"))
-            .version("0.1.3")
+            .version("0.1.4")
             .icon(crate::ui::app_icon())
             .author("Eduardo Flores")
             .developers([("Eduardo Flores", "edfloreshz@proton.me")])
