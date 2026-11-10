@@ -183,20 +183,23 @@ impl Hashtags {
             Message::ToggleFollow(name, following) => {
                 let mastodon = self.mastodon.clone();
                 return cosmic::task::future(async move {
-                    let result = if following {
-                        mastodon.unfollow_tag(name.clone()).await
-                    } else {
-                        mastodon.follow_tag(name.clone()).await
-                    };
+                    let result = crate::client::within_timeout(
+                        async {
+                            if following {
+                                mastodon.unfollow_tag(name.clone()).await
+                            } else {
+                                mastodon.follow_tag(name.clone()).await
+                            }
+                        },
+                        crate::fl!("action-error"),
+                    )
+                    .await;
                     match result {
                         Ok(response) => app::Message::Hashtags(Message::FollowResult(
                             name,
                             response.json.following.unwrap_or(!following),
                         )),
-                        Err(err) => app::Message::Error(crate::client::api_error(
-                            &err,
-                            crate::fl!("action-error"),
-                        )),
+                        Err(err) => app::Message::Error(err),
                     }
                 });
             }

@@ -1520,51 +1520,60 @@ impl Application for AppModel {
                 accounts::Message::Follow(id, following) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if following {
-                            mastodon.unfollow_account(id).await
-                        } else {
-                            mastodon.follow_account(id, None).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if following {
+                                    mastodon.unfollow_account(id).await
+                                } else {
+                                    mastodon.follow_account(id, None).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
                 accounts::Message::Mute(id, muting) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if muting {
-                            mastodon.unmute_account(id).await
-                        } else {
-                            mastodon.mute_account(id, true).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if muting {
+                                    mastodon.unmute_account(id).await
+                                } else {
+                                    mastodon.mute_account(id, true).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
                 accounts::Message::Block(id, blocking) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if blocking {
-                            mastodon.unblock_account(id).await
-                        } else {
-                            mastodon.block_account(id).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if blocking {
+                                    mastodon.unblock_account(id).await
+                                } else {
+                                    mastodon.block_account(id).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::CacheRelationship(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
@@ -1708,51 +1717,60 @@ impl Application for AppModel {
                 status::Message::Favorite(status_id, favorited) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if favorited {
-                            mastodon.unfavourite_status(status_id).await
-                        } else {
-                            mastodon.favourite_status(status_id).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if favorited {
+                                    mastodon.unfavourite_status(status_id).await
+                                } else {
+                                    mastodon.favourite_status(status_id).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::FavoriteChanged(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
                 status::Message::Boost(status_id, boosted) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if boosted {
-                            mastodon.unreblog_status(status_id).await
-                        } else {
-                            mastodon.reblog_status(status_id).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if boosted {
+                                    mastodon.unreblog_status(status_id).await
+                                } else {
+                                    mastodon.reblog_status(status_id).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::CacheStatus(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
                 status::Message::Bookmark(status_id, bookmarked) => {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        let result = if bookmarked {
-                            mastodon.unbookmark_status(status_id).await
-                        } else {
-                            mastodon.bookmark_status(status_id).await
-                        };
+                        let result = crate::client::within_timeout(
+                            async {
+                                if bookmarked {
+                                    mastodon.unbookmark_status(status_id).await
+                                } else {
+                                    mastodon.bookmark_status(status_id).await
+                                }
+                            },
+                            crate::fl!("action-error"),
+                        )
+                        .await;
                         match result {
                             Ok(response) => Message::BookmarkChanged(response.json),
-                            Err(err) => Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => Message::Error(err),
                         }
                     }))
                 }
@@ -1927,17 +1945,19 @@ impl Application for AppModel {
                             let mastodon = self.mastodon.clone();
                             let id = account.id.clone();
                             tasks.push(cosmic::task::future(async move {
-                                match mastodon.get_relationships(vec![id]).await {
+                                match crate::client::within_timeout(
+                                    mastodon.get_relationships(vec![id]),
+                                    crate::fl!("action-error"),
+                                )
+                                .await
+                                {
                                     Ok(response) => response
                                         .json
                                         .into_iter()
                                         .next()
                                         .map(Message::CacheRelationship)
                                         .unwrap_or(Message::None),
-                                    Err(err) => Message::Error(crate::client::api_error(
-                                        &err,
-                                        crate::fl!("action-error"),
-                                    )),
+                                    Err(err) => Message::Error(err),
                                 }
                             }));
                         }
@@ -2017,12 +2037,14 @@ impl Application for AppModel {
                             Dialog::DeleteStatus(id) => {
                                 let mastodon = self.mastodon.clone();
                                 tasks.push(cosmic::task::future(async move {
-                                    match mastodon.delete_status(id.clone()).await {
+                                    match crate::client::within_timeout(
+                                        mastodon.delete_status(id.clone()),
+                                        crate::fl!("action-error"),
+                                    )
+                                    .await
+                                    {
                                         Ok(_) => Message::StatusDeleted(id),
-                                        Err(err) => Message::Error(crate::client::api_error(
-                                            &err,
-                                            crate::fl!("action-error"),
-                                        )),
+                                        Err(err) => Message::Error(err),
                                     }
                                 }));
                             }
