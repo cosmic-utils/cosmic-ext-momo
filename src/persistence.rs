@@ -46,23 +46,60 @@ pub fn save_snapshot<T: Serialize>(base_url: &str, slug: &str, items: &[T], max_
     let Some(path) = snapshot_path(base_url, slug) else {
         return;
     };
-    let Some(parent) = path.parent() else { return };
-    if let Err(err) = std::fs::create_dir_all(parent) {
-        tracing::warn!("failed to create cache directory: {err}");
-        return;
-    }
-
-    // `items` is ordered newest-first (matches `Timeline`/`Notifications`'
-    // front-to-back id ordering), so bound by keeping the front (newest).
     let bounded = &items[..max_items.min(items.len())];
-    match serde_json::to_vec(bounded) {
-        Ok(data) => {
-            if let Err(err) = std::fs::write(&path, data) {
-                tracing::warn!("failed to write cache snapshot {}: {err}", path.display());
-            }
-        }
-        Err(err) => tracing::warn!("failed to serialize cache snapshot: {err}"),
+    let result = serde_json::to_vec(bounded)
+        .map_err(std::io::Error::other)
+        .and_then(|data| write_snapshot(&path, &data));
+    if let Err(error) = result {
+        tracing::warn!("failed to save cache snapshot: {error}");
     }
+}
+
+fn private_directory(path: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    restrict_permissions(path, 0o700)
+}
+
+fn restrict_permissions(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
+}
+
+fn write_snapshot(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing cache directory"))?;
+    private_directory(parent)?;
+    let temporary = parent.join(format!("{}.new", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&temporary)?.write_all(data)?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
 }
 
 pub fn save_status_snapshot(base_url: &str, slug: &str, items: &[megalodon::entities::Status]) {
@@ -80,10 +117,23 @@ pub fn load_snapshot<T: DeserializeOwned>(base_url: &str, slug: &str) -> Vec<T> 
     let Some(path) = snapshot_path(base_url, slug) else {
         return Vec::new();
     };
-    match std::fs::read(&path) {
-        Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
+    load_snapshot_at(&path)
+}
+
+fn load_snapshot_at<T: DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
+    let result = (|| {
+        restrict_permissions(
+            path.parent()
+                .ok_or_else(|| std::io::Error::other("missing cache directory"))?,
+            0o700,
+        )?;
+        restrict_permissions(path, 0o600)?;
+        std::fs::read(path)
+    })();
+    result
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
 }
 
 /// Keep only the `MAX_SCOPED_FILES` most-recently-modified hashtag/list
@@ -207,6 +257,35 @@ fn remove_cache_dir(path: PathBuf) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_repair_private_permissions_and_replace_content_atomically() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("toot-snapshot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("home.json");
+        std::fs::write(&path, b"[1]").unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(load_snapshot_at::<u32>(&path), vec![1]);
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        write_snapshot(&path, b"[2]").unwrap();
+        assert_eq!(load_snapshot_at::<u32>(&path), vec![2]);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn an_image_download_from_before_cleanup_cannot_write_back_to_disk() {
         let root = std::env::temp_dir().join(format!("toot-image-test-{}", uuid::Uuid::new_v4()));
