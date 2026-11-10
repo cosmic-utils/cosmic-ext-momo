@@ -1075,7 +1075,10 @@ impl Application for AppModel {
             );
         }
         if matches!(self.dialog_pages.front(), Some(Dialog::Media(..))) {
-            subscriptions.push(cosmic::iced::event::listen_with(|event, _, _| {
+            subscriptions.push(cosmic::iced::event::listen_with(|event, status, _| {
+                if status == cosmic::iced::event::Status::Captured {
+                    return None;
+                }
                 let cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
                     key,
                     ..
@@ -1768,6 +1771,7 @@ impl Application for AppModel {
             },
             Message::Status(message) => match message {
                 status::Message::Menu(id) => self.cache.reading.post_menu = id,
+                status::Message::Hover(id) => self.cache.reading.hovered_post = id,
                 status::Message::MenuAction(message) => {
                     self.cache.reading.post_menu = None;
                     return self.update(Message::Status(*message));
@@ -3741,6 +3745,24 @@ impl AppModel {
             .into()
         };
 
+        let image = if attachment.video && self.video.as_ref().is_some_and(|video| !video.error) {
+            let button = widget::button::custom(image)
+                .padding(0)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .class(crate::ui::surface_button_style(false))
+                .on_press(Message::VideoPause);
+            #[cfg(target_os = "linux")]
+            let button = button.name(if self.video.as_ref().is_some_and(|video| video.paused) {
+                fl!("media-play")
+            } else {
+                fl!("media-pause")
+            });
+            Element::from(button)
+        } else {
+            image
+        };
+
         // Matching bars keep the media centered and leave room for playback controls.
         let bar_height = Length::Fixed(96.0);
 
@@ -3776,38 +3798,26 @@ impl AppModel {
             .align_y(Vertical::Center);
 
         let mut controls = widget::row![]
+            .width(Length::Fill)
             .spacing(spacing.space_s)
             .align_y(cosmic::iced::Alignment::Center);
         if let Some(video) = &self.video {
-            controls = controls
-                .push(crate::ui::icon_action(
-                    if video.paused {
-                        "media-playback-start-symbolic"
-                    } else {
-                        "media-playback-pause-symbolic"
-                    },
-                    if video.paused {
-                        fl!("media-play")
-                    } else {
-                        fl!("media-pause")
-                    },
-                    (!video.error).then_some(Message::VideoPause),
-                ))
-                .push(crate::ui::icon_action(
-                    if video.muted {
-                        "audio-volume-muted-symbolic"
-                    } else {
-                        "audio-volume-high-symbolic"
-                    },
-                    if video.muted {
-                        fl!("media-unmute")
-                    } else {
-                        fl!("media-mute")
-                    },
-                    (!video.error).then_some(Message::VideoMute),
-                ));
+            controls = controls.push(crate::ui::icon_action(
+                if video.paused {
+                    "media-playback-start-symbolic"
+                } else {
+                    "media-playback-pause-symbolic"
+                },
+                if video.paused {
+                    fl!("media-play")
+                } else {
+                    fl!("media-pause")
+                },
+                (!video.error).then_some(Message::VideoPause),
+            ));
             if video.duration > 0.0 && !video.error {
                 controls = controls
+                    .push(widget::text(playback_time(video.display_position())))
                     .push(
                         widget::slider(
                             0.0..=video.duration as f32,
@@ -3815,20 +3825,31 @@ impl AppModel {
                             |value| Message::VideoSeek(value as f64),
                         )
                         .on_release(Message::VideoSeekReleased)
-                        .width(180),
+                        .width(Length::Fill),
                     )
-                    .push(widget::text(format!(
-                        "{}:{:02} / {}:{:02}",
-                        video.display_position() as u64 / 60,
-                        video.display_position() as u64 % 60,
-                        video.duration as u64 / 60,
-                        video.duration as u64 % 60
-                    )));
+                    .push(widget::text(playback_time(video.duration)));
+            } else {
+                controls = controls.push(widget::space::horizontal());
             }
+            controls = controls.push(crate::ui::icon_action(
+                if video.muted {
+                    "audio-volume-muted-symbolic"
+                } else {
+                    "audio-volume-high-symbolic"
+                },
+                if video.muted {
+                    fl!("media-unmute")
+                } else {
+                    fl!("media-mute")
+                },
+                (!video.error).then_some(Message::VideoMute),
+            ));
         }
         let footer = widget::container(
             widget::column![
-                controls,
+                widget::container(controls)
+                    .padding([0, spacing.space_m])
+                    .width(Length::Fill),
                 widget::row![
                     crate::ui::icon_action(
                         "go-previous-symbolic",
@@ -3941,6 +3962,7 @@ impl AppModel {
     }
 
     fn load_reader(&mut self) -> Task<Message> {
+        self.cache.reading.hovered_post = None;
         self.auto_comments = None;
         self.measure_comments = false;
         self.comment_animation = None;
@@ -4033,6 +4055,20 @@ impl AppModel {
 
     fn account<'a>(&'a self, account: &'a Account) -> Element<'a, Message> {
         accounts::account(account, &self.cache).map(Message::Account)
+    }
+}
+
+fn playback_time(seconds: f64) -> String {
+    let seconds = seconds.max(0.0) as u64;
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
     }
 }
 

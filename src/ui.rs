@@ -54,3 +54,25 @@ pub fn refresh_action<'a, M: Clone + 'static>(
         icon_action("view-refresh-symbolic", label, message)
     }
 }
+
+/// Match post surfaces without inheriting the accent colors or mouse-hover
+/// focus border used by image buttons. Keyboard focus remains visible.
+pub fn surface_button_style(highlight: bool) -> cosmic::style::Button {
+    cosmic::style::Button::Custom {
+        active: Box::new(|focused, theme| surface_style(theme, focused, false)),
+        hovered: Box::new(move |focused, theme| surface_style(theme, focused, highlight)),
+        pressed: Box::new(move |focused, theme| surface_style(theme, focused, highlight)),
+        disabled: Box::new(|theme| surface_style(theme, false, false)),
+    }
+}
+
+fn surface_style(theme: &cosmic::Theme, focused: bool, highlight: bool) -> widget::button::Style {
+    use widget::button::Catalog;
+    let mut style = theme.active(focused, false, &cosmic::style::Button::Image);
+    style.text_color = None;
+    style.icon_color = None;
+    if highlight {
+        style.background = Some(theme.current_container().component.hover.into());
+    }
+    style
+}

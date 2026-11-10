@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct State {
     pub post_menu: Option<String>,
+    pub hovered_post: Option<String>,
     pub warnings: HashSet<String>,
     pub media: HashSet<String>,
     pub collapsed_replies: HashSet<String>,
@@ -33,6 +34,7 @@ impl State {
     pub fn new(authenticated: bool) -> Self {
         Self {
             post_menu: None,
+            hovered_post: None,
             warnings: HashSet::new(),
             media: HashSet::new(),
             collapsed_replies: HashSet::new(),

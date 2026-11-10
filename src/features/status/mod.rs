@@ -26,6 +26,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Message {
     Menu(Option<String>),
+    Hover(Option<String>),
     MenuAction(Box<Message>),
     ToggleWarning(String),
     ToggleMedia(String),
@@ -136,8 +137,8 @@ pub fn status<'a>(
         }
         _ => (),
     }
-    let mut post =
-        widget::column![reblog_button, header(status, cache, density)].spacing(spacing.space_xs);
+    let header = conversation_header(header(status, cache, density).into(), status, options);
+    let mut post = widget::column![reblog_button, header].spacing(spacing.space_xs);
     if matches!(decision, Decision::Warn(..)) {
         post = post.push(
             widget::button::standard(fl!("reading-hide-post"))
@@ -156,12 +157,13 @@ pub fn status<'a>(
                 .on_press(Message::ToggleWarning(status.id.clone())),
             );
         if !cache.reading.content_visible(status) {
-            return conversation_card(
+            return post_surface(
                 post.padding(if density == FeedDensity::Full { 16 } else { 12 })
                     .width(Length::Fill)
                     .into(),
                 status,
                 options,
+                cache,
             );
         }
     }
@@ -197,16 +199,17 @@ pub fn status<'a>(
     post = post
         .push_maybe(tags(status, options))
         .push_maybe(actions(status, options, cache));
-    conversation_card(
+    post_surface(
         post.padding(if density == FeedDensity::Full { 16 } else { 12 })
             .width(Length::Fill)
             .into(),
         status,
         options,
+        cache,
     )
 }
 
-fn conversation_card<'a>(
+fn conversation_header<'a>(
     content: Element<'a, Message>,
     status: &Status,
     options: StatusOptions,
@@ -214,35 +217,44 @@ fn conversation_card<'a>(
     if !options.expand {
         return content;
     }
-    use cosmic::widget::button::Catalog;
     // Buttons let embedded links and controls handle their own events first.
     let button = widget::button::custom(content)
         .padding(0)
         .width(Length::Fill)
-        .class(cosmic::style::Button::Custom {
-            active: Box::new(|focused, theme| {
-                inherit_post_colors(theme.active(focused, false, &cosmic::style::Button::Image))
-            }),
-            hovered: Box::new(|focused, theme| {
-                inherit_post_colors(theme.hovered(focused, false, &cosmic::style::Button::Image))
-            }),
-            pressed: Box::new(|focused, theme| {
-                inherit_post_colors(theme.pressed(focused, false, &cosmic::style::Button::Image))
-            }),
-            disabled: Box::new(|theme| {
-                inherit_post_colors(theme.disabled(&cosmic::style::Button::Image))
-            }),
-        })
+        .class(crate::ui::surface_button_style(true))
         .on_press(Message::ExpandStatus(status.id.clone()));
     #[cfg(target_os = "linux")]
     let button = button.name(fl!("reading-conversation"));
     button.into()
 }
 
-fn inherit_post_colors(mut style: cosmic::widget::button::Style) -> cosmic::widget::button::Style {
-    style.text_color = None;
-    style.icon_color = None;
-    style
+fn post_surface<'a>(
+    content: Element<'a, Message>,
+    status: &Status,
+    options: StatusOptions,
+    cache: &Cache,
+) -> Element<'a, Message> {
+    if !options.expand {
+        return content;
+    }
+    let hovered = cache.reading.hovered_post.as_deref() == Some(&status.id);
+    let surface =
+        widget::container(content)
+            .width(Length::Fill)
+            .class(cosmic::style::Container::custom(move |theme| {
+                widget::container::Style {
+                    background: hovered.then(|| theme.current_container().component.hover.into()),
+                    border: cosmic::iced::Border {
+                        radius: theme.cosmic().corner_radii.radius_s.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }));
+    widget::mouse_area(surface)
+        .on_enter(Message::Hover(Some(status.id.clone())))
+        .on_exit(Message::Hover(None))
+        .into()
 }
 
 fn card<'a>(
@@ -302,7 +314,7 @@ fn card<'a>(
             .class(cosmic::style::Container::Dialog(false))
             .apply(widget::button::custom)
             .width(Length::Fill)
-            .class(cosmic::style::Button::Image)
+            .class(crate::ui::surface_button_style(false))
             .on_press(Message::OpenLink(card.url.clone()))
             .into()
     })
@@ -310,7 +322,7 @@ fn card<'a>(
 
 pub fn update(message: Message) -> Task<app::Message> {
     match message {
-        Message::Menu(_) | Message::MenuAction(_) => {
+        Message::Menu(_) | Message::MenuAction(_) | Message::Hover(_) => {
             cosmic::task::message(app::Message::Status(message))
         }
         Message::ToggleWarning(_)
@@ -586,7 +598,7 @@ fn media<'a>(
                 .width(width)
                 .max_height(if single { 550.0 } else { gallery_height });
             let button = widget::button::custom(preview)
-                .class(cosmic::style::Button::Image)
+                .class(crate::ui::surface_button_style(false))
                 .padding(0)
                 .width(width)
                 .height(height)
