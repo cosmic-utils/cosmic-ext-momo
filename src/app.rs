@@ -682,6 +682,11 @@ impl Application for AppModel {
             return Some(self.view_media(images, *index));
         }
 
+        if self.dialog_pages.is_empty() && self.nav.active_data::<Page>() == Some(&Page::Lists) {
+            if let Some(dialog) = self.lists.dialog(&self.cache) {
+                return Some(dialog);
+            }
+        }
         let dialog_page = self.dialog_pages.front()?;
         if let Dialog::Report(state) = dialog_page {
             return Some(state.view());
@@ -844,6 +849,17 @@ impl Application for AppModel {
     fn on_escape(&mut self) -> Task<Self::Message> {
         if self.onboarding.is_some() {
             return Task::none();
+        }
+        if self.nav.active_data::<Page>() == Some(&Page::Lists) && self.lists.has_menu() {
+            return self.update(Message::Lists(lists::Message::Menu(None)));
+        }
+        if self.dialog_pages.is_empty()
+            && self.nav.active_data::<Page>() == Some(&Page::Lists)
+            && self.lists.is_editing()
+        {
+            return self.update(Message::Lists(lists::Message::Editor(
+                lists::editor::Message::Close,
+            )));
         }
         if matches!(self.dialog_pages.front(), Some(Dialog::Compose(_))) {
             return self.update(Message::Compose(compose::Message::Close));
