@@ -30,20 +30,26 @@ fn inbox() -> Notifications {
 fn groups_reactions_by_post_kind_and_day_without_losing_ids() {
     let mut cache = Cache::new();
     cache.reading.filters = Filters::ready(vec![]);
+    let mut other_post = notification("6", "favourite", "bob", "2026-01-01T12:04:00Z", true);
+    other_post.status.as_mut().unwrap().id = "s2".into();
     let items = vec![
         notification("1", "favourite", "alice", "2026-01-01T12:00:00Z", true),
         notification("2", "favourite", "bob", "2026-01-01T12:01:00Z", true),
         notification("3", "favourite", "alice", "2026-01-01T12:02:00Z", true),
         notification("4", "reblog", "bob", "2026-01-01T12:03:00Z", true),
         notification("5", "favourite", "alice", "2026-01-03T12:00:00Z", true),
+        other_post,
     ];
     let groups = model::groups(items.iter(), &cache, Tab::All, Filter::All);
-    assert_eq!(groups.len(), 3);
+    assert_eq!(groups.len(), 4);
     assert_eq!(groups[0].ids, ["5"]);
-    assert_eq!(groups[1].kind, Kind::Reblog);
-    assert_eq!(groups[2].ids, ["1", "2", "3"]);
-    assert_eq!(groups[2].actors.len(), 2);
-    assert_eq!(model::actor_name(&groups[2].actors[0]), "alice");
+    assert_eq!(groups[1].ids, ["6"]);
+    assert_eq!(groups[1].post.as_ref().unwrap().id, "s2");
+    assert_eq!(groups[2].kind, Kind::Reblog);
+    assert_eq!(groups[3].ids, ["1", "2", "3"]);
+    assert_eq!(groups[3].post.as_ref().unwrap().id, "s1");
+    assert_eq!(groups[3].actors.len(), 2);
+    assert_eq!(model::actor_name(&groups[3].actors[0]), "alice");
 }
 
 #[test]

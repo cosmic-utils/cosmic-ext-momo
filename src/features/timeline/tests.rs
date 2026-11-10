@@ -79,8 +79,15 @@ fn stream_posts_wait_for_publish_but_own_posts_are_immediate_and_deletions_remov
 #[test]
 fn account_reset_clears_buffered_posts_errors_and_invalidates_previous_requests() {
     let mut feed = feed();
-    let _ = feed.update(Message::IncomingStatus(post("1")));
+    let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1"], "cursor", true))));
+    let _ = feed.update(Message::IncomingStatus(post("2")));
+    let _ = feed.update(Message::LoadMore);
     let previous = feed.request;
+    let _ = feed.update(Message::PageLoaded(previous, Err("offline".into())));
+    assert_eq!(feed.statuses, ["1".to_string()]);
+    assert_eq!(feed.incoming.len(), 1);
+    assert!(feed.has_loaded);
+    assert_eq!(feed.error.as_deref(), Some("offline"));
     feed.reset(Client::new("https://another.example.org".into(), None));
     let _ = feed.update(Message::PageLoaded(
         previous,
@@ -299,7 +306,6 @@ fn check_reaction_responses(boost: bool, wrapped: bool) {
     let cases = [
         (false, 19, 20, true, 20),
         (true, 20, 20, false, 19),
-        (false, 19, 20, true, 20),
         (true, 20, 19, false, 19),
         (false, 19, 19, true, 20),
         (true, 0, 0, false, 0),

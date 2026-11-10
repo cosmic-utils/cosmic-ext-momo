@@ -248,16 +248,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn account_directory_is_hex_split_below_name_limits() {
+    fn account_directories_are_bounded_contained_and_distinct() {
         let store = Store::at(PathBuf::from("/drafts"));
-        let directory = store.directory(&"a".repeat(100)).unwrap();
-        let names: Vec<_> = directory
-            .strip_prefix("/drafts")
-            .unwrap()
-            .iter()
-            .map(|name| name.len())
-            .collect();
-        assert_eq!(names, [128, 72]);
+        let mut directories = std::collections::HashSet::new();
+        for account in [
+            "a".repeat(100),
+            "a".repeat(1000),
+            "字".repeat(500),
+            "https://example.org#alice".into(),
+            "https://example.org#bob".into(),
+            "../alice".into(),
+            ".._alice".into(),
+        ] {
+            let directory = store.directory(&account).unwrap();
+            let relative = directory.strip_prefix("/drafts").unwrap();
+            assert!(relative.components().count() > 0);
+            for component in relative.components() {
+                let std::path::Component::Normal(name) = component else {
+                    panic!("account directory must stay within the storage root");
+                };
+                assert!(name.len() <= 255);
+            }
+            assert_eq!(directory, store.directory(&account).unwrap());
+            assert!(
+                directories.insert(directory),
+                "account paths must be distinct"
+            );
+        }
         assert!(store.directory("").is_err());
     }
 }

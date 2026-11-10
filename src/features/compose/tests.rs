@@ -13,6 +13,18 @@ fn post(visibility: StatusVisibility) -> Status {
         "created_at":"2020-01-01T00:00:00Z","emojis":[],"replies_count":0,"reblogs_count":0,"favourites_count":0,"sensitive":false,"spoiler_text":"Warning",
         "visibility":visibility,"media_attachments":[],"mentions":[],"tags":[],"quote_approval":{"automatic":[],"manual":[],"current_user":"unknown"}})).unwrap()
 }
+fn post_with_poll(visibility: StatusVisibility) -> Status {
+    let mut post = post(visibility);
+    post.poll = Some(
+        serde_json::from_value(json!({
+            "id":"p1", "expires_at":"2099-01-01T00:00:00Z", "expired":false,
+            "multiple":false, "votes_count":3, "voted":false, "emojis":[],
+            "options":[{"title":"One","votes_count":1},{"title":"Two","votes_count":2}]
+        }))
+        .unwrap(),
+    );
+    post
+}
 struct Temporary(std::path::PathBuf);
 impl Temporary {
     fn new() -> Self {
@@ -45,20 +57,25 @@ fn character_count_uses_graphemes_url_reservations_and_remote_mention_concession
 
 #[test]
 fn replies_never_default_to_a_broader_audience_and_honor_account_preferences() {
-    for original in [
-        StatusVisibility::Public,
-        StatusVisibility::Unlisted,
-        StatusVisibility::Private,
-        StatusVisibility::Direct,
+    use StatusVisibility::{Direct, Private, Public, Unlisted};
+
+    // Columns are the account's public, unlisted, private, and direct preferences.
+    for (original, expected) in [
+        (Public, [Public, Unlisted, Private, Direct]),
+        (Unlisted, [Unlisted, Unlisted, Private, Direct]),
+        (Private, [Private, Private, Private, Direct]),
+        (Direct, [Direct, Direct, Direct, Direct]),
     ] {
-        for preference in ["public", "unlisted", "private", "direct"] {
+        for (preference, expected) in ["public", "unlisted", "private", "direct"]
+            .into_iter()
+            .zip(expected)
+        {
             let me = account("me", preference);
             let target = post(original.clone());
             let reply = State::reply_to(&target, Some(&me));
-            assert!(visibility_rank(&reply.visibility) >= visibility_rank(&original));
-            assert!(
-                visibility_rank(&reply.visibility)
-                    >= visibility_rank(&State::new(Some(&me)).visibility)
+            assert_eq!(
+                reply.visibility, expected,
+                "original: {original:?}, account preference: {preference}"
             );
             assert_eq!(reply.spoiler_text, "Warning");
             assert!(reply.content_warning);
@@ -90,7 +107,7 @@ fn replies_deduplicate_recipients_and_exclude_the_authenticated_account() {
 
 #[test]
 fn editing_uses_original_source_and_leaves_existing_polls_and_visibility_unchanged() {
-    let original = post(StatusVisibility::Private);
+    let original = post_with_poll(StatusVisibility::Private);
     let source = megalodon::entities::StatusSource {
         id: "s1".into(),
         text: "Original https://example.org".into(),
@@ -99,6 +116,10 @@ fn editing_uses_original_source_and_leaves_existing_polls_and_visibility_unchang
     let mut state = State::edit(&original, source);
     assert_eq!(state.text, "Original https://example.org");
     assert_eq!(state.edit_id.as_deref(), Some("s1"));
+    assert_eq!(state.visibility, StatusVisibility::Private);
+    assert!(state.has_poll);
+    assert!(state.poll_options.is_empty());
+    assert!(state.valid(&Limits::default()));
     let payload = state.payload();
     assert!(payload.get("visibility").is_none());
     assert!(payload.get("poll").is_none());
@@ -395,14 +416,16 @@ fn new_polls_enforce_server_limits_and_keep_existing_poll_edits_untouched() {
     assert!(!state.valid(&limits));
     state.poll_options.pop();
     let mut edited = State::edit(
-        &post(StatusVisibility::Public),
+        &post_with_poll(StatusVisibility::Public),
         megalodon::entities::StatusSource {
             id: "s1".into(),
             text: "edited".into(),
             spoiler_text: "".into(),
         },
     );
-    edited.has_poll = true;
+    assert!(edited.has_poll);
+    assert!(edited.poll_options.is_empty());
+    assert!(edited.valid(&limits));
     assert!(edited.payload().get("poll").is_none());
     edited.poll_options = state.poll_options;
     assert!(!edited.valid(&limits));
@@ -423,7 +446,10 @@ fn schedule_requests_cannot_silently_become_immediate_posts_and_keep_idempotency
     assert_eq!(request.headers()["idempotency-key"], state.submission_key);
     let payload: serde_json::Value =
         serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-    assert!(payload["scheduled_at"].as_str().is_some());
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(payload["scheduled_at"].as_str().unwrap()).unwrap(),
+        chrono::DateTime::parse_from_rfc3339(&state.schedule).unwrap()
+    );
     let accepted = network::decode_published(
         json!({"id":"schedule-1","scheduled_at":state.schedule,"params":{"text":"Later"}}),
     )
