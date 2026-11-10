@@ -130,18 +130,20 @@ impl Search {
         // feed (with a way back), rather than piling it below the results.
         if let Some(timeline) = &self.tag_timeline {
             return widget::column![
-                widget::button::text(crate::fl!("reading-back"))
-                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
-                    .on_press(Message::DeselectTag),
+                widget::container(
+                    widget::container(
+                        widget::button::text(crate::fl!("reading-back"))
+                            .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                            .on_press(Message::DeselectTag)
+                    )
+                    .width(Length::Fill)
+                    .max_width(crate::ui::CONTENT_WIDTH)
+                    .padding(cosmic::iced::Padding::new(16.0).bottom(0.0)),
+                )
+                .center_x(Length::Fill),
                 timeline.view(cache).map(Message::Timeline),
             ]
-            .spacing(spacing.space_xs)
             .width(Length::Fill)
-            .height(Length::Fill)
-            .apply(widget::container)
-            .max_width(700)
-            .apply(widget::container)
-            .center_x(Length::Fill)
             .height(Length::Fill)
             .into();
         }
@@ -276,7 +278,8 @@ impl Search {
         ]
         .spacing(spacing.space_s)
         .apply(widget::container)
-        .max_width(700)
+        .max_width(crate::ui::CONTENT_WIDTH)
+        .padding(16)
         .apply(widget::container)
         .center_x(Length::Fill)
         .height(Length::Fill)
