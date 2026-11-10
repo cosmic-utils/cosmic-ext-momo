@@ -46,21 +46,33 @@ fn snapshot_path(base_url: &str, slug: &str) -> Option<PathBuf> {
 /// Save a bounded slice of items to disk as JSON. Errors are logged, not
 /// surfaced — a failed cache write should never interrupt the user.
 fn save_snapshot<T: Serialize>(
-    base_url: &str,
-    slug: &str,
+    path: &std::path::Path,
     items: &[T],
     max_items: usize,
 ) -> std::io::Result<()> {
-    let path = snapshot_path(base_url, slug)
-        .ok_or_else(|| std::io::Error::other("cache directory unavailable"))?;
     let bounded = &items[..max_items.min(items.len())];
     let data = serde_json::to_vec(bounded).map_err(std::io::Error::other)?;
-    write_snapshot(&path, &data)
+    write_snapshot(path, &data)
 }
 
 pub enum Snapshot {
     Statuses(String, Vec<megalodon::entities::Status>),
     Notifications(Vec<megalodon::entities::Notification>),
+}
+
+impl Snapshot {
+    pub fn save_in(&self, directory: &std::path::Path) -> std::io::Result<()> {
+        match self {
+            Self::Statuses(slug, posts) => {
+                save_snapshot(&directory.join(format!("{slug}.json")), posts, MAX_STATUSES)
+            }
+            Self::Notifications(items) => save_snapshot(
+                &directory.join("notifications.json"),
+                items,
+                MAX_NOTIFICATIONS,
+            ),
+        }
+    }
 }
 
 static SNAPSHOT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -84,14 +96,12 @@ pub fn save_snapshots(
         return Ok(());
     }
     written.insert(account.to_owned(), revision);
+    let directory =
+        account_dir(account).ok_or_else(|| "cache directory unavailable".to_string())?;
     for snapshot in snapshots {
-        let result = match snapshot {
-            Snapshot::Statuses(slug, posts) => save_snapshot(account, &slug, &posts, MAX_STATUSES),
-            Snapshot::Notifications(items) => {
-                save_snapshot(account, "notifications", &items, MAX_NOTIFICATIONS)
-            }
-        };
-        result.map_err(|error| error.to_string())?;
+        snapshot
+            .save_in(&directory)
+            .map_err(|error| error.to_string())?;
     }
     prune_scoped_snapshots(account);
     Ok(())

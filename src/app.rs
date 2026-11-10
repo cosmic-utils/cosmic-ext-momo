@@ -173,7 +173,7 @@ pub struct AppModel {
     draft_revision: u64,
     draft_save_due: Option<std::time::Instant>,
     draft_saving: bool,
-    cache_saving: bool,
+    cache_saving: Option<u64>,
     compose_request: u64,
     completion_serial: u64,
     home: Timeline,
@@ -268,7 +268,7 @@ pub enum Message {
     FlushCache,
     SaveDraft,
     DraftSaved(u64, Result<(), String>),
-    CacheSaved(Result<(), String>),
+    CacheSaved(u64, Result<(), String>),
     None,
 }
 
@@ -444,7 +444,7 @@ impl Application for AppModel {
             draft_revision: 0,
             draft_save_due: None,
             draft_saving: false,
-            cache_saving: false,
+            cache_saving: None,
             compose_request: 0,
             completion_serial: 0,
             home: Timeline::new(mastodon.clone(), TimelineKind::Home),
@@ -1436,12 +1436,32 @@ impl Application for AppModel {
                 tasks.push(self.bookmarks.update(message));
             }
             Message::Hashtags(message) => {
+                if matches!(
+                    &message,
+                    hashtags::Message::Select(_) | hashtags::Message::Deselect
+                ) {
+                    tasks.push(self.save_cache_in_background(true));
+                }
                 tasks.push(self.hashtags.update(message));
             }
             Message::Lists(message) => {
+                if matches!(
+                    &message,
+                    lists::Message::Select(_) | lists::Message::Deselect
+                ) {
+                    tasks.push(self.save_cache_in_background(true));
+                }
                 tasks.push(self.lists.update(message));
             }
             Message::Search(message) => {
+                if matches!(
+                    &message,
+                    search::Message::SelectTag(_)
+                        | search::Message::DeselectTag
+                        | search::Message::Clear
+                ) {
+                    tasks.push(self.save_cache_in_background(true));
+                }
                 tasks.push(self.search.update(message));
             }
             Message::Social(message) => {
@@ -2131,7 +2151,7 @@ impl Application for AppModel {
             Message::CloseToast(id) => {
                 self.toasts.remove(id);
             }
-            Message::FlushCache => tasks.push(self.save_cache_in_background()),
+            Message::FlushCache => tasks.push(self.save_cache_in_background(false)),
             Message::SaveDraft => {
                 if !self.draft_saving
                     && self
@@ -2166,8 +2186,10 @@ impl Application for AppModel {
                     }
                 }
             }
-            Message::CacheSaved(result) => {
-                self.cache_saving = false;
+            Message::CacheSaved(revision, result) => {
+                if self.cache_saving == Some(revision) {
+                    self.cache_saving = None;
+                }
                 if let Err(error) = result {
                     self.cache.dirty = true;
                     tracing::warn!("failed to save feed snapshots: {error}");
@@ -3050,7 +3072,7 @@ impl AppModel {
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
         self.draft_saving = false;
         self.draft_save_due = None;
-        self.cache_saving = false;
+        self.cache_saving = None;
         self.video = None;
         self.video_url = None;
         self.social = crate::features::social::Social::default();
@@ -3234,20 +3256,32 @@ impl AppModel {
         ]
         .into_iter()
         .flatten()
+        .chain(
+            [
+                self.hashtags.timeline(),
+                self.lists.timeline(),
+                self.search.timeline(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|timeline| timeline.snapshot(&self.cache)),
+        )
         .collect()
     }
 
-    fn save_cache_in_background(&mut self) -> Task<Message> {
+    fn save_cache_in_background(&mut self, leaving_scope: bool) -> Task<Message> {
         self.prune_cache();
         let images = self.drain_image_queue();
-        if !self.cache.dirty || self.clearing_cache || self.cache_saving {
+        if self.clearing_cache
+            || (!leaving_scope && (!self.cache.dirty || self.cache_saving.is_some()))
+        {
             return images;
         }
         let snapshots = self.cache_snapshots();
         let account = self.mastodon.cache_key();
         let revision = crate::persistence::reserve_snapshot_save();
         self.cache.dirty = false;
-        self.cache_saving = true;
+        self.cache_saving = Some(revision);
         Task::batch([
             images,
             cosmic::task::future(async move {
@@ -3256,14 +3290,14 @@ impl AppModel {
                 })
                 .await
                 .unwrap_or_else(|error| Err(error.to_string()));
-                Message::CacheSaved(result)
+                Message::CacheSaved(revision, result)
             }),
         ])
     }
 
     // Account changes and exit need a completed snapshot before proceeding.
     fn flush_cache_to_disk(&mut self) {
-        if (!self.cache.dirty && !self.cache_saving) || self.clearing_cache {
+        if (!self.cache.dirty && self.cache_saving.is_none()) || self.clearing_cache {
             return;
         }
         let snapshots = self.cache_snapshots();

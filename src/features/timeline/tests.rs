@@ -294,3 +294,52 @@ fn cache_pruning_preserves_boost_originals_reader_posts_and_deletion_tombstones(
     cache.insert_status(post("deleted"));
     assert!(!cache.statuses.contains_key("deleted"));
 }
+
+#[test]
+fn scoped_snapshots_preserve_the_selected_feed_and_its_current_content() {
+    let root = std::env::temp_dir().join(format!("toot-scopes-{}", uuid::Uuid::new_v4()));
+    for kind in [
+        TimelineKind::Tag("rust".into()),
+        TimelineKind::List("friends".into()),
+    ] {
+        let mut feed = Timeline::new(
+            Client::new("https://example.org".into(), None),
+            kind.clone(),
+        );
+        let mut cache = Cache::new();
+        let mut current = post("saved");
+        current.content = "<p>The latest edit</p>".into();
+        cache.insert_status(current);
+        let _ = feed.update(Message::PageLoaded(0, Ok(page(&["saved"], "end", false))));
+        feed.snapshot(&cache).unwrap().save_in(&root).unwrap();
+        let restored: Vec<Status> = serde_json::from_slice(
+            &std::fs::read(root.join(format!("{}.json", kind.slug()))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, "saved");
+        assert_eq!(restored[0].content, "<p>The latest edit</p>");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scoped_snapshot_names_are_single_bounded_path_components() {
+    for kind in [
+        TimelineKind::Tag("../../private".into()),
+        TimelineKind::List("../other".into()),
+        TimelineKind::Tag("字".repeat(500)),
+    ] {
+        let slug = kind.slug();
+        assert_eq!(std::path::Path::new(&slug).components().count(), 1);
+        assert!(slug.len() < 32);
+    }
+    assert_ne!(
+        TimelineKind::Tag("rust".into()).slug(),
+        TimelineKind::Tag("Rust".into()).slug()
+    );
+    assert_ne!(
+        TimelineKind::Tag("same".into()).slug(),
+        TimelineKind::List("same".into()).slug()
+    );
+}
