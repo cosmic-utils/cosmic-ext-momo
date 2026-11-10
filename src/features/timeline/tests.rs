@@ -211,24 +211,200 @@ fn reconnect_supersedes_an_inflight_page_without_discarding_visible_posts() {
 #[test]
 fn saved_collection_changes_remove_rows_and_supersede_stale_pages() {
     for kind in [TimelineKind::Favorites, TimelineKind::Bookmarks] {
-        let mut feed = Timeline::new(Client::new("https://example.org".into(), None), kind);
+        let mut feed = Timeline::new(
+            Client::new("https://example.org".into(), Some("token".into())),
+            kind,
+        );
         let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1", "2"], "2", true))));
+        let _ = feed.update(Message::Refresh);
         let stale = feed.request;
         let _ = feed.update(Message::CollectionChanged(post("1")));
         assert_eq!(feed.statuses, ["2".to_string()]);
-        assert!(feed.loading && !feed.older);
+        assert!(!feed.loading && feed.has_loaded);
+        assert!(cosmic::iced::advanced::subscription::into_recipes(feed.subscription()).is_empty());
         let _ = feed.update(Message::PageLoaded(stale, Ok(page(&["1"], "1", false))));
         assert_eq!(feed.statuses, ["2".to_string()]);
         let mut added = post("3");
         added.favourited = Some(true);
         added.bookmarked = Some(true);
         let _ = feed.update(Message::CollectionChanged(added));
-        let _ = feed.update(Message::PageLoaded(
-            feed.request,
-            Ok(page(&["3", "2"], "2", false)),
-        ));
         assert_eq!(feed.statuses, ["3".to_string(), "2".to_string()]);
+        assert!(!feed.loading);
+        assert_eq!(feed.max_id.as_deref(), Some("2"));
     }
+}
+
+#[test]
+fn like_unlike_and_relike_keep_counts_and_embedded_copies_in_sync() {
+    let mut cache = Cache::new();
+    let mut original = post("1");
+    original.favourites_count = 19;
+    original.favourited = Some(false);
+    let mut boost = post("boost");
+    boost.reblog = Some(Box::new(original.clone()));
+    cache.insert_status(boost);
+    let mut activity = notification("n1", "mention", "alice", "2026-01-01T12:00:00Z", true);
+    activity.status = Some(original.clone());
+    cache.insert_notification(activity);
+    let mut favorites = Timeline::new(
+        Client::new("https://example.org".into(), Some("token".into())),
+        TimelineKind::Favorites,
+    );
+    let _ = favorites.update(Message::PageLoaded(0, Ok(page(&[], "", false))));
+
+    for (liked, count) in [(true, 20), (false, 19), (true, 20)] {
+        let _ = favorites.update(Message::Refresh);
+        let stale = favorites.request;
+        // Apply the confirmed mutation response before changing collection membership.
+        let mut confirmed = original.clone();
+        confirmed.favourited = Some(liked);
+        confirmed.favourites_count = count;
+        cache.insert_status(confirmed.clone());
+        let _ = favorites.update(Message::CollectionChanged(confirmed));
+        let _ = favorites.update(Message::PageLoaded(stale, Ok(page(&["1"], "1", false))));
+
+        assert_eq!(favorites.statuses.contains(&"1".to_owned()), liked);
+        assert!(
+            cosmic::iced::advanced::subscription::into_recipes(favorites.subscription()).is_empty()
+        );
+        for post in [
+            &cache.statuses["1"],
+            cache.statuses["boost"].reblog.as_deref().unwrap(),
+            cache.notifications["n1"].status.as_ref().unwrap(),
+        ] {
+            assert_eq!(post.favourited, Some(liked));
+            assert_eq!(post.favourites_count, count);
+        }
+    }
+}
+
+#[test]
+fn favorite_requests_reconcile_stale_counts_from_successful_http_responses() {
+    check_reaction_responses(false, false);
+}
+
+#[test]
+fn boost_requests_reconcile_stale_counts_from_successful_http_responses() {
+    check_reaction_responses(true, false);
+}
+
+#[test]
+fn boost_requests_reconcile_counts_inside_reblog_wrappers() {
+    check_reaction_responses(true, true);
+}
+
+fn check_reaction_responses(boost: bool, wrapped: bool) {
+    use std::io::{Read, Write};
+    // was liked, previous count, returned count, returned state, expected count
+    let cases = [
+        (false, 19, 20, true, 20),
+        (true, 20, 20, false, 19),
+        (false, 19, 20, true, 20),
+        (true, 20, 19, false, 19),
+        (false, 19, 19, true, 20),
+        (true, 0, 0, false, 0),
+        (false, 20, 20, false, 20),
+        (true, 20, 25, false, 25),
+    ];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for (was_liked, _, returned_count, returned_state, _) in cases {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let action = match (boost, was_liked) {
+                (true, true) => "unreblog",
+                (true, false) => "reblog",
+                (false, true) => "unfavourite",
+                (false, false) => "favourite",
+            };
+            assert!(String::from_utf8_lossy(&request)
+                .starts_with(&format!("POST /api/v1/statuses/1/{action} HTTP/1.1")));
+            let mut response = post("1");
+            if boost {
+                response.reblogs_count = returned_count;
+                response.reblogged = Some(returned_state);
+                if wrapped && !was_liked {
+                    let mut wrapper = post("wrapper");
+                    wrapper.reblog = Some(Box::new(response));
+                    response = wrapper;
+                }
+            } else {
+                response.favourites_count = returned_count;
+                response.favourited = Some(returned_state);
+            }
+            let body = serde_json::to_string(&response).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    let client = Client::new(url, Some("test-token".into()));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for (was_liked, previous_count, _, returned_state, expected_count) in cases {
+            let status = if boost {
+                crate::features::status::boost::set(
+                    &client,
+                    "1".into(),
+                    was_liked,
+                    Some(previous_count),
+                )
+                .await
+            } else {
+                crate::features::status::favorite::set(
+                    &client,
+                    "1".into(),
+                    was_liked,
+                    Some(previous_count),
+                )
+                .await
+            }
+            .unwrap();
+            let mut cache = Cache::new();
+            cache.insert_status(status);
+            let original = &cache.statuses["1"];
+            if boost {
+                assert_eq!(original.reblogged, Some(returned_state));
+                assert_eq!(original.reblogs_count, expected_count);
+                if wrapped && !was_liked {
+                    assert_eq!(
+                        cache.statuses["wrapper"]
+                            .reblog
+                            .as_ref()
+                            .unwrap()
+                            .reblogs_count,
+                        expected_count
+                    );
+                }
+            } else {
+                assert_eq!(original.favourited, Some(returned_state));
+                assert_eq!(original.favourites_count, expected_count);
+            }
+        }
+    });
+    server.join().unwrap();
 }
 
 #[test]

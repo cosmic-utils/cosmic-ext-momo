@@ -1,3 +1,6 @@
+pub mod boost;
+pub mod favorite;
+
 use cosmic::{
     app::Task,
     iced::{Alignment, Length},

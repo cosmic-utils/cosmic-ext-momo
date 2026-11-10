@@ -1766,40 +1766,29 @@ impl Application for AppModel {
 
                 status::Message::Favorite(status_id, favorited) => {
                     let mastodon = self.mastodon.clone();
+                    let previous = self.cache.statuses.get(&status_id);
+                    let favorited = previous
+                        .and_then(|post| post.favourited)
+                        .unwrap_or(favorited);
+                    let count = previous.map(|post| post.favourites_count);
                     tasks.push(cosmic::task::future(async move {
-                        let result = crate::client::within_timeout(
-                            async {
-                                if favorited {
-                                    mastodon.unfavourite_status(status_id).await
-                                } else {
-                                    mastodon.favourite_status(status_id).await
-                                }
-                            },
-                            crate::fl!("action-error"),
-                        )
-                        .await;
+                        let result =
+                            status::favorite::set(&mastodon, status_id, favorited, count).await;
                         match result {
-                            Ok(response) => Message::FavoriteChanged(response.json),
+                            Ok(status) => Message::FavoriteChanged(status),
                             Err(err) => Message::Error(err),
                         }
                     }))
                 }
                 status::Message::Boost(status_id, boosted) => {
                     let mastodon = self.mastodon.clone();
+                    let previous = self.cache.statuses.get(&status_id);
+                    let boosted = previous.and_then(|post| post.reblogged).unwrap_or(boosted);
+                    let count = previous.map(|post| post.reblogs_count);
                     tasks.push(cosmic::task::future(async move {
-                        let result = crate::client::within_timeout(
-                            async {
-                                if boosted {
-                                    mastodon.unreblog_status(status_id).await
-                                } else {
-                                    mastodon.reblog_status(status_id).await
-                                }
-                            },
-                            crate::fl!("action-error"),
-                        )
-                        .await;
+                        let result = status::boost::set(&mastodon, status_id, boosted, count).await;
                         match result {
-                            Ok(response) => Message::CacheStatus(response.json),
+                            Ok(status) => Message::CacheStatus(status),
                             Err(err) => Message::Error(err),
                         }
                     }))
@@ -1842,14 +1831,14 @@ impl Application for AppModel {
                 tasks.push(self.drain_image_queue());
             }
             Message::FavoriteChanged(status) => {
-                self.cache.dirty = true;
+                self.cache.insert_status(status.clone());
                 tasks.push(
                     self.favorites
                         .update(timeline::Message::CollectionChanged(status)),
                 );
             }
             Message::BookmarkChanged(status) => {
-                self.cache.dirty = true;
+                self.cache.insert_status(status.clone());
                 tasks.push(
                     self.bookmarks
                         .update(timeline::Message::CollectionChanged(status)),

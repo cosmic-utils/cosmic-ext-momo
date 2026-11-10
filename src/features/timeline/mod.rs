@@ -389,10 +389,17 @@ impl Timeline {
                 };
                 if !included {
                     self.statuses.retain(|id| id != &status.id);
-                    self.incoming.retain(|id| id != &status.id);
+                } else if !self.statuses.contains(&status.id) {
+                    self.statuses.push_front(status.id.clone());
                 }
-                self.begin_load(false);
-                tasks.push(cache_status(status));
+                self.incoming.retain(|id| id != &status.id);
+                // Mutation responses already contain the confirmed status. An immediate
+                // collection reload can undo them: Mastodon removes favourites in a worker.
+                // Cancel older pages too, so they cannot restore the pre-mutation state.
+                self.request += 1;
+                self.loading = false;
+                self.has_loaded = true;
+                self.error = None;
             }
             Message::PrependStatus(status) => {
                 self.incoming.retain(|id| id != &status.id);
