@@ -207,3 +207,26 @@ fn reconnect_supersedes_an_inflight_page_without_discarding_visible_posts() {
     assert_eq!(feed.statuses, ["new".to_owned(), "1".to_owned()]);
     assert_eq!(feed.max_id.as_deref(), Some("next"));
 }
+
+#[test]
+fn saved_collection_changes_remove_rows_and_supersede_stale_pages() {
+    for kind in [TimelineKind::Favorites, TimelineKind::Bookmarks] {
+        let mut feed = Timeline::new(Client::new("https://example.org".into(), None), kind);
+        let _ = feed.update(Message::PageLoaded(0, Ok(page(&["1", "2"], "2", true))));
+        let stale = feed.request;
+        let _ = feed.update(Message::CollectionChanged(post("1")));
+        assert_eq!(feed.statuses, ["2".to_string()]);
+        assert!(feed.loading && !feed.older);
+        let _ = feed.update(Message::PageLoaded(stale, Ok(page(&["1"], "1", false))));
+        assert_eq!(feed.statuses, ["2".to_string()]);
+        let mut added = post("3");
+        added.favourited = Some(true);
+        added.bookmarked = Some(true);
+        let _ = feed.update(Message::CollectionChanged(added));
+        let _ = feed.update(Message::PageLoaded(
+            feed.request,
+            Ok(page(&["3", "2"], "2", false)),
+        ));
+        assert_eq!(feed.statuses, ["3".to_string(), "2".to_string()]);
+    }
+}
