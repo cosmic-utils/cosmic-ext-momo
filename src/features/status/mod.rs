@@ -46,7 +46,7 @@ pub enum Message {
     Bookmark(String, bool),
     OpenLink(String),
     /// Open the post media gallery at the selected index.
-    ViewMedia(Vec<crate::media::Attachment>, usize),
+    ViewMedia(Vec<crate::media::Attachment>, usize, String),
     /// Request to delete one of the authenticated user's own statuses;
     /// opens a confirmation dialog rather than deleting immediately.
     Delete(String),
@@ -294,8 +294,8 @@ pub fn update(message: Message) -> Task<app::Message> {
             cosmic::task::message(app::Message::Compose(compose::Message::Edit(id)))
         }
         Message::OpenLink(url) => cosmic::task::message(app::Message::Open(url)),
-        Message::ViewMedia(images, index) => cosmic::task::message(app::Message::Dialog(
-            app::DialogAction::Open(app::Dialog::Media(images, index)),
+        Message::ViewMedia(images, index, id) => cosmic::task::message(app::Message::Dialog(
+            app::DialogAction::Open(app::Dialog::Media(images, index, id)),
         )),
         Message::Delete(status_id) => cosmic::task::message(app::Message::Dialog(
             app::DialogAction::Open(app::Dialog::DeleteStatus(status_id)),
@@ -509,7 +509,7 @@ fn media<'a>(
         .map(|media| {
             let on_press =
                 if let Some(index) = images.iter().position(|image| image.url == media.url) {
-                    Message::ViewMedia(images.clone(), index)
+                    Message::ViewMedia(images.clone(), index, status.id.clone())
                 } else {
                     Message::OpenLink(media.url.clone())
                 };

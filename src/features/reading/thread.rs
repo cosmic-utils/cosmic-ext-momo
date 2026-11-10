@@ -29,13 +29,32 @@ impl Thread {
         }
     }
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, app::Message> {
+        self.view_content(cache, false)
+    }
+
+    pub fn media_view<'a>(&'a self, cache: &'a Cache) -> Element<'a, app::Message> {
+        self.view_content(cache, true).map(|message| match message {
+            app::Message::Status(message) => app::Message::MediaStatus(Box::new(message)),
+            app::Message::RetryReader => app::Message::RetryMediaThread,
+            message => message,
+        })
+    }
+
+    fn view_content<'a>(&'a self, cache: &'a Cache, media: bool) -> Element<'a, app::Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
         if let Some(notice) = super::filter_notice(cache) {
             return notice.map(app::Message::Status);
         }
         let mut items = widget::column![].spacing(spacing.space_s);
         for (ids, label) in [
-            (self.ancestors.as_slice(), Some(fl!("reading-ancestors"))),
+            (
+                if media {
+                    &[]
+                } else {
+                    self.ancestors.as_slice()
+                },
+                Some(fl!("reading-ancestors")),
+            ),
             (std::slice::from_ref(&self.root), None),
             (self.descendants.as_slice(), Some(fl!("reading-replies"))),
         ] {
@@ -58,7 +77,7 @@ impl Thread {
                     items = items.push(
                         status::status(
                             post,
-                            StatusOptions::new(true, true, true, id != &self.root)
+                            StatusOptions::new(!media, true, true, id != &self.root)
                                 .context(filters::Context::Thread),
                             cache,
                         )

@@ -135,6 +135,8 @@ pub struct AppModel {
     main_page: Option<ContextPage>,
     context_history: Vec<ContextPage>,
     thread: Option<reading::thread::Thread>,
+    media_thread: Option<reading::thread::Thread>,
+    media_details: bool,
     profile: Option<reading::profile::Profile>,
     report_serial: u64,
     core: Core,
@@ -260,6 +262,9 @@ pub enum Message {
     CloseToast(ToastId),
     Surface(cosmic::surface::Action<Message>),
     NavigateMedia(bool),
+    ToggleMediaDetails,
+    RetryMediaThread,
+    MediaStatus(Box<status::Message>),
     VideoTick,
     VideoFrameUploaded(
         cosmic::iced::core::image::Id,
@@ -301,8 +306,8 @@ pub enum Dialog {
     SwitchInstance(String),
     Logout,
     DeleteStatus(String),
-    /// Post images and videos, with the selected index.
-    Media(Vec<crate::media::Attachment>, usize),
+    /// Post images and videos, with the selected index and originating status ID.
+    Media(Vec<crate::media::Attachment>, usize, String),
 }
 
 pub struct Flags {
@@ -398,6 +403,8 @@ impl Application for AppModel {
             confirm_clear_cache: false,
             clearing_cache: false,
             reader_request: 0,
+            media_thread: None,
+            media_details: true,
             filter_request: 0,
             filters_loading: false,
             main_page: None,
@@ -703,7 +710,7 @@ impl Application for AppModel {
         // The media viewer is a full-window overlay (like cosmic-files' gallery
         // view), not a small centered dialog box, so it's built and returned
         // before the `widget::dialog()`-based match below.
-        if let Some(Dialog::Media(images, index)) = self.dialog_pages.front() {
+        if let Some(Dialog::Media(images, index, _)) = self.dialog_pages.front() {
             return Some(self.view_media(images, *index));
         }
 
@@ -1227,35 +1234,38 @@ impl Application for AppModel {
                 }
             }
             Message::ThreadLoaded(request, result) => {
-                if let Some(thread) = &mut self.thread {
-                    if thread.request == request {
-                        thread.loading = false;
-                        match result {
-                            Ok((post, context)) => {
-                                thread.ancestors = context
-                                    .ancestors
-                                    .iter()
-                                    .map(|post| post.id.clone())
-                                    .collect();
-                                thread.descendants = context
-                                    .descendants
-                                    .iter()
-                                    .map(|post| post.id.clone())
-                                    .collect();
-                                let mut images = vec![];
-                                for post in context
-                                    .ancestors
-                                    .into_iter()
-                                    .chain(std::iter::once(post))
-                                    .chain(context.descendants)
-                                {
-                                    images.extend(crate::cache::extract_status_images(&post));
-                                    self.cache.insert_status(post);
-                                }
-                                tasks.push(cosmic::task::message(Message::Fetch(images)));
+                if let Some(thread) = self
+                    .thread
+                    .iter_mut()
+                    .chain(self.media_thread.iter_mut())
+                    .find(|thread| thread.request == request)
+                {
+                    thread.loading = false;
+                    match result {
+                        Ok((post, context)) => {
+                            thread.ancestors = context
+                                .ancestors
+                                .iter()
+                                .map(|post| post.id.clone())
+                                .collect();
+                            thread.descendants = context
+                                .descendants
+                                .iter()
+                                .map(|post| post.id.clone())
+                                .collect();
+                            let mut images = vec![];
+                            for post in context
+                                .ancestors
+                                .into_iter()
+                                .chain(std::iter::once(post))
+                                .chain(context.descendants)
+                            {
+                                images.extend(crate::cache::extract_status_images(&post));
+                                self.cache.insert_status(post);
                             }
-                            Err(error) => thread.error = Some(error),
+                            tasks.push(cosmic::task::message(Message::Fetch(images)));
                         }
+                        Err(error) => thread.error = Some(error),
                     }
                 }
             }
@@ -2055,8 +2065,34 @@ impl Application for AppModel {
                     video.finish_scrub();
                 }
             }
+            Message::ToggleMediaDetails => self.media_details = !self.media_details,
+            Message::RetryMediaThread => tasks.push(self.load_media_thread()),
+            Message::MediaStatus(message) => {
+                let message = match *message {
+                    status::Message::MenuAction(message) => {
+                        self.cache.reading.post_menu = None;
+                        message
+                    }
+                    message => Box::new(message),
+                };
+                if matches!(
+                    *message,
+                    status::Message::OpenAccount(_)
+                        | status::Message::ExpandStatus(_)
+                        | status::Message::Reply(_)
+                        | status::Message::Edit(_)
+                        | status::Message::Report(..)
+                        | status::Message::Delete(_)
+                        | status::Message::InlineLink(..)
+                        | status::Message::ViewMedia(..)
+                ) {
+                    self.dialog_pages.pop_front();
+                    self.media_thread = None;
+                }
+                tasks.push(self.update(Message::Status(*message)));
+            }
             Message::NavigateMedia(forward) => {
-                if let Some(Dialog::Media(images, index)) = self.dialog_pages.front_mut() {
+                if let Some(Dialog::Media(images, index, _)) = self.dialog_pages.front_mut() {
                     if forward {
                         if *index + 1 < images.len() {
                             *index += 1;
@@ -2069,6 +2105,12 @@ impl Application for AppModel {
             Message::Dialog(action) => match action {
                 DialogAction::Open(dialog) => match dialog {
                     Dialog::Compose(state) => return self.open_compose(state),
+                    Dialog::Media(items, index, id) => {
+                        if index < items.len() {
+                            self.dialog_pages.push_back(Dialog::Media(items, index, id));
+                            tasks.push(self.load_media_thread());
+                        }
+                    }
                     _ => self.dialog_pages.push_back(dialog),
                 },
                 DialogAction::Update(dialog_page) => {
@@ -2080,6 +2122,10 @@ impl Application for AppModel {
                     }
                     if !matches!(self.dialog_pages.front(), Some(Dialog::Report(state)) if state.sending)
                     {
+                        if matches!(self.dialog_pages.front(), Some(Dialog::Media(..))) {
+                            self.media_thread = None;
+                            self.cache.reading.post_menu = None;
+                        }
                         self.dialog_pages.pop_front();
                     }
                 }
@@ -2228,7 +2274,7 @@ impl Application for AppModel {
         }
         self.sync_video();
         let image_url = match self.dialog_pages.front() {
-            Some(Dialog::Media(items, index)) => items
+            Some(Dialog::Media(items, index, _)) => items
                 .get(*index)
                 .filter(|item| !item.video)
                 .map(|item| item.url.clone()),
@@ -2247,7 +2293,7 @@ impl Application for AppModel {
 impl AppModel {
     fn sync_video(&mut self) {
         let attachment = match self.dialog_pages.front() {
-            Some(Dialog::Media(items, index)) => items.get(*index).filter(|item| item.video),
+            Some(Dialog::Media(items, index, _)) => items.get(*index).filter(|item| item.video),
             _ => None,
         };
         let url = attachment.map(|item| item.url.clone());
@@ -2876,7 +2922,8 @@ impl AppModel {
                                     profile.posts.insert(0, post.id.clone());
                                 }
                             }
-                            if let Some(thread) = &mut self.thread {
+                            for thread in self.thread.iter_mut().chain(self.media_thread.iter_mut())
+                            {
                                 if reply.as_ref() == Some(&thread.root)
                                     && !thread.descendants.contains(&post.id)
                                 {
@@ -3108,6 +3155,7 @@ impl AppModel {
         self.clearing_cache = false;
         self.filter_request += 1;
         self.thread = None;
+        self.media_thread = None;
         self.profile = None;
         self.main_page = None;
         self.context_history.clear();
@@ -3218,7 +3266,7 @@ impl AppModel {
             }
         }
         statuses.extend(self.social.statuses().map(|post| post.id.clone()));
-        if let Some(thread) = &self.thread {
+        for thread in self.thread.iter().chain(self.media_thread.iter()) {
             statuses.insert(thread.root.clone());
             statuses.extend(thread.ancestors.iter().chain(&thread.descendants).cloned());
         }
@@ -3244,7 +3292,7 @@ impl AppModel {
             statuses.extend(state.in_reply_to_id.iter().cloned());
             images.extend(state.preview_urls());
         }
-        if let Some(Dialog::Media(items, index)) = self.dialog_pages.front() {
+        if let Some(Dialog::Media(items, index, _)) = self.dialog_pages.front() {
             images.extend(items.iter().filter_map(|item| item.preview.clone()));
             if let Some(item) = items.get(*index) {
                 images.insert(item.url.clone());
@@ -3546,6 +3594,15 @@ impl AppModel {
         let header_row = widget::row![
             widget::space::horizontal(),
             crate::ui::icon_action(
+                "view-dual-symbolic",
+                if self.media_details {
+                    fl!("media-hide-details")
+                } else {
+                    fl!("media-show-details")
+                },
+                Some(Message::ToggleMediaDetails)
+            ),
+            crate::ui::icon_action(
                 "send-to-symbolic",
                 fl!("media-open"),
                 Some(Message::Open(original_url.clone()))
@@ -3662,8 +3719,24 @@ impl AppModel {
             .width(Length::Fill),
         );
 
-        content
+        let media = content
             .push(footer)
+            .width(Length::FillPortion(2))
+            .height(Length::Fill);
+        let mut layout = widget::row![media].height(Length::Fill);
+        if self.media_details {
+            if let Some(thread) = &self.media_thread {
+                let details = thread.media_view(&self.cache);
+                layout = layout.push(
+                    widget::container(widget::scrollable(details).height(Length::Fill))
+                        .padding(spacing.space_s)
+                        .width(Length::FillPortion(1))
+                        .max_width(420.)
+                        .height(Length::Fill),
+                );
+            }
+        }
+        layout
             .apply(widget::container)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -3697,6 +3770,20 @@ impl AppModel {
                 .values()
                 .filter_map(|post| post.poll.as_ref())
                 .find(|poll| poll.id == id)
+        })
+    }
+
+    fn load_media_thread(&mut self) -> Task<Message> {
+        let Some(Dialog::Media(_, _, id)) = self.dialog_pages.front() else {
+            return Task::none();
+        };
+        let id = id.clone();
+        self.reader_request += 1;
+        let request = self.reader_request;
+        self.media_thread = Some(reading::thread::Thread::new(request, id.clone()));
+        let client = self.mastodon.clone();
+        cosmic::task::future(async move {
+            Message::ThreadLoaded(request, reading::thread::fetch(client, id).await)
         })
     }
 

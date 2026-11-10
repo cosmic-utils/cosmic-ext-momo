@@ -407,3 +407,6 @@ list-save-name = Save name
 list-done = Done
 
 compose-retry-upload = Retry upload
+
+media-show-details = Show post and replies
+media-hide-details = Hide post and replies
