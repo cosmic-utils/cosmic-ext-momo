@@ -460,3 +460,36 @@ fn private_messages_require_recipients_and_drafts_keep_poll_and_schedule_state()
     assert_eq!(restored.reply_ceiling, Some(StatusVisibility::Direct));
     assert!(store.load("https://example.org#bob").unwrap().is_empty());
 }
+
+#[test]
+fn interrupted_uploads_are_retryable_after_restoring_a_draft() {
+    let mut state = State::default();
+    state.text = "Photo".into();
+    let mut media = Media {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "photo.png".into(),
+        stored_name: Some(format!("{}.png", uuid::Uuid::new_v4())),
+        bytes: 100,
+        description: "A description worth keeping".into(),
+        attachment: None,
+        uploading: true,
+        progress: Default::default(),
+        error: None,
+    };
+    assert!(!media.needs_upload());
+    state.media.push(media.clone());
+    let restored: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(restored.media[0].needs_upload());
+    assert_eq!(restored.media[0].description, media.description);
+    media.uploading = false;
+    media.error = Some("offline".into());
+    assert!(media.needs_upload());
+    media.attachment = Some(
+        serde_json::from_value(json!({"id":"m1","type":"image","url":"https://example.org/photo"}))
+            .unwrap(),
+    );
+    assert!(!media.needs_upload());
+    media.error = None;
+    state.media = vec![media];
+    assert!(state.valid(&Limits::default()));
+}
