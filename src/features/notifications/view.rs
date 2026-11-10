@@ -86,8 +86,27 @@ pub fn notification<'a>(
         if inbox.expanded.contains(&group.key) {
             for actor in group.actors.iter().skip(1) {
                 body = body.push(
-                    widget::button::link(html::full_acct(actor))
+                    widget::row![
+                        widget::button::image(
+                            cache
+                                .handles
+                                .get(&actor.avatar)
+                                .cloned()
+                                .unwrap_or_else(crate::cache::fallback_handle),
+                        )
+                        .width(36)
+                        .height(36)
                         .on_press(Message::Status(status::Message::OpenAccount(actor.clone()))),
+                        widget::column![
+                            widget::button::link(model::actor_name(actor)).on_press(
+                                Message::Status(status::Message::OpenAccount(actor.clone()))
+                            ),
+                            widget::text::caption(html::full_acct(actor)),
+                        ]
+                        .spacing(2),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 );
             }
         }

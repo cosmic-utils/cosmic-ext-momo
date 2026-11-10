@@ -534,6 +534,9 @@ fn media<'a>(
                 cosmic::iced::ContentFit::Cover
             })
             .border_radius([9.0; 4]);
+            let preview = widget::container(preview)
+                .width(width)
+                .max_height(if single { 550.0 } else { gallery_height });
             let button = widget::button::custom(preview)
                 .class(cosmic::style::Button::Image)
                 .padding(0)

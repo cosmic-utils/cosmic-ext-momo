@@ -169,7 +169,7 @@ impl Editor {
         .spacing(12);
         if self.search_mode {
             body = body.push(
-                widget::button::text(fl!("list-back-members"))
+                widget::button::text(fl!("reading-back"))
                     .leading_icon(widget::icon::from_name("go-previous-symbolic"))
                     .on_press_maybe(
                         (!self.busy || self.search_loading || self.members_loading)

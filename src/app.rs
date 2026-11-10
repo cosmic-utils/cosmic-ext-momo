@@ -131,6 +131,7 @@ pub struct AppModel {
     reader_request: u64,
     filter_request: u64,
     filters_loading: bool,
+    main_page: Option<ContextPage>,
     context_history: Vec<ContextPage>,
     thread: Option<reading::thread::Thread>,
     profile: Option<reading::profile::Profile>,
@@ -383,6 +384,7 @@ impl Application for AppModel {
             reader_request: 0,
             filter_request: 0,
             filters_loading: false,
+            main_page: None,
             context_history: Vec::new(),
             thread: None,
             profile: None,
@@ -572,6 +574,8 @@ impl Application for AppModel {
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
+        self.main_page = None;
+        self.context_history.clear();
         self.nav.activate(id);
         if self.nav.data::<Page>(id) == Some(&Page::Notifications) {
             self.activity.read();
@@ -640,28 +644,16 @@ impl Application for AppModel {
                 Message::ToggleContextDrawer,
             )
             .title(self.context_page.title()),
-            ContextPage::Account(account) => {
-                let content = self
-                    .profile
-                    .as_ref()
-                    .map(|profile| profile.view(&self.cache))
-                    .unwrap_or_else(|| self.account(account));
+            ContextPage::Social(crate::features::social::Page::People(_, _)) => {
                 context_drawer::context_drawer(
-                    self.reader_view(content),
+                    self.social.view(&self.cache),
                     Message::ToggleContextDrawer,
                 )
                 .title(self.context_page.title())
             }
-            ContextPage::Status(status) => context_drawer::context_drawer(
-                self.reader_view(self.status(status)),
-                Message::ToggleContextDrawer,
-            )
-            .title(self.context_page.title()),
-            ContextPage::Social(_) => context_drawer::context_drawer(
-                self.reader_view(self.social.view(&self.cache)),
-                Message::ToggleContextDrawer,
-            )
-            .title(self.context_page.title()),
+            ContextPage::Account(_) | ContextPage::Status(_) | ContextPage::Social(_) => {
+                return None;
+            }
             ContextPage::Settings => {
                 let content = settings::view(
                     &self.config,
@@ -912,23 +904,37 @@ impl Application for AppModel {
                 .height(Length::Fill),
             );
         }
-        let content = match self.nav.active_data::<Page>() {
-            Some(page) => match page {
-                Page::Home => self.home.view(&self.cache).map(Message::Home),
-                Page::Notifications => self
-                    .notifications
-                    .view(&self.cache)
-                    .map(Message::Notifications),
-                Page::Explore => self.explore.view(&self.cache).map(Message::Explore),
-                Page::Local => self.local.view(&self.cache).map(Message::Local),
-                Page::Federated => self.federated.view(&self.cache).map(Message::Federated),
-                Page::Favorites => self.favorites.view(&self.cache).map(Message::Favorites),
-                Page::Bookmarks => self.bookmarks.view(&self.cache).map(Message::Bookmarks),
-                Page::Hashtags => self.hashtags.view(&self.cache).map(Message::Hashtags),
-                Page::Lists => self.lists.view(&self.cache).map(Message::Lists),
-                Page::Search => self.search.view(&self.cache).map(Message::Search),
-            },
-            None => widget::text(fl!("select-page")).into(),
+        let content = if let Some(page) = &self.main_page {
+            let content = match page {
+                ContextPage::Account(account) => self
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.view(&self.cache))
+                    .unwrap_or_else(|| self.account(account)),
+                ContextPage::Status(id) => self.status(id),
+                ContextPage::Social(_) => self.social.view(&self.cache),
+                _ => unreachable!("drawer page in main view"),
+            };
+            self.reader_view(content)
+        } else {
+            match self.nav.active_data::<Page>() {
+                Some(page) => match page {
+                    Page::Home => self.home.view(&self.cache).map(Message::Home),
+                    Page::Notifications => self
+                        .notifications
+                        .view(&self.cache)
+                        .map(Message::Notifications),
+                    Page::Explore => self.explore.view(&self.cache).map(Message::Explore),
+                    Page::Local => self.local.view(&self.cache).map(Message::Local),
+                    Page::Federated => self.federated.view(&self.cache).map(Message::Federated),
+                    Page::Favorites => self.favorites.view(&self.cache).map(Message::Favorites),
+                    Page::Bookmarks => self.bookmarks.view(&self.cache).map(Message::Bookmarks),
+                    Page::Hashtags => self.hashtags.view(&self.cache).map(Message::Hashtags),
+                    Page::Lists => self.lists.view(&self.cache).map(Message::Lists),
+                    Page::Search => self.search.view(&self.cache).map(Message::Search),
+                },
+                None => widget::text(fl!("select-page")).into(),
+            }
         }
         .apply(widget::container)
         .width(Length::Fill)
@@ -1157,10 +1163,12 @@ impl Application for AppModel {
                     if let ContextPage::Social(social) = &page {
                         tasks.push(self.social.open(social.clone(), self.mastodon.clone()));
                     }
-                    self.context_page = page;
-                    self.core.window.show_context = true;
+                    self.main_page = Some(page);
                     tasks.push(self.load_reader());
+                } else {
+                    self.main_page = None;
                 }
+                tasks.push(self.update_title());
             }
             Message::RetryReader => tasks.push(self.load_reader()),
             Message::ProfileMore => {
@@ -1874,9 +1882,24 @@ impl Application for AppModel {
                 }
             }
             Message::ToggleContextPage(context_page) => {
-                if self.context_page == context_page {
-                    self.core.window.show_context = !self.core.window.show_context;
-                } else {
+                if matches!(
+                    context_page,
+                    ContextPage::About
+                        | ContextPage::Settings
+                        | ContextPage::Social(crate::features::social::Page::People(_, _))
+                ) {
+                    if self.context_page == context_page {
+                        self.core.window.show_context = !self.core.window.show_context;
+                    } else {
+                        self.context_page = context_page;
+                        self.core.window.show_context = true;
+                    }
+                    if self.core.window.show_context {
+                        if let ContextPage::Social(page) = &self.context_page {
+                            tasks.push(self.social.open(page.clone(), self.mastodon.clone()));
+                        }
+                    }
+                } else if self.main_page.as_ref() != Some(&context_page) {
                     if let ContextPage::Social(page) = &context_page {
                         tasks.push(self.social.open(page.clone(), self.mastodon.clone()));
                     }
@@ -1900,22 +1923,14 @@ impl Application for AppModel {
                             }));
                         }
                     }
-                    if !self.core.window.show_context {
-                        self.context_history.clear();
+                    if let Some(previous) = self.main_page.replace(context_page) {
+                        self.context_history.push(previous);
                     }
-                    if self.core.window.show_context
-                        && matches!(
-                            self.context_page,
-                            ContextPage::Account(_)
-                                | ContextPage::Status(_)
-                                | ContextPage::Social(_)
-                        )
-                    {
-                        self.context_history.push(self.context_page.clone());
-                    }
-                    self.context_page = context_page;
-                    self.core.window.show_context = true;
+                    self.core.window.show_context = false;
                     tasks.push(self.load_reader());
+                    tasks.push(self.update_title());
+                } else {
+                    self.core.window.show_context = false;
                 }
             }
             Message::ToggleContextDrawer => {
@@ -2900,6 +2915,7 @@ impl AppModel {
         self.filter_request += 1;
         self.thread = None;
         self.profile = None;
+        self.main_page = None;
         self.context_history.clear();
         self.cache.reading = reading::State::new(self.mastodon.is_authenticated());
         self.dialog_pages.clear();
@@ -3089,7 +3105,10 @@ impl AppModel {
 
     pub fn update_title(&mut self) -> Task<Message> {
         let mut window_title = fl!("app-title");
-        if let Some(page) = self.nav.text(self.nav.active()) {
+        if let Some(page) = &self.main_page {
+            window_title.push_str(" — ");
+            window_title.push_str(&page.title());
+        } else if let Some(page) = self.nav.text(self.nav.active()) {
             window_title.push_str(" — ");
             window_title.push_str(page);
         }
@@ -3356,15 +3375,15 @@ impl AppModel {
         let request = self.reader_request;
         self.thread = None;
         self.profile = None;
-        match self.context_page.clone() {
-            ContextPage::Status(id) => {
+        match self.main_page.clone() {
+            Some(ContextPage::Status(id)) => {
                 self.thread = Some(reading::thread::Thread::new(request, id.clone()));
                 let client = self.mastodon.clone();
                 cosmic::task::future(async move {
                     Message::ThreadLoaded(request, reading::thread::fetch(client, id).await)
                 })
             }
-            ContextPage::Account(account) => {
+            Some(ContextPage::Account(account)) => {
                 let images = vec![account.avatar.clone(), account.header.clone()];
                 let id = account.id.clone();
                 self.profile = Some(reading::profile::Profile::new(request, account));
@@ -3385,11 +3404,28 @@ impl AppModel {
 
     fn reader_view<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut view = widget::column![].spacing(12);
-        if !self.context_history.is_empty() {
-            view = view
-                .push(widget::button::standard(fl!("reading-back")).on_press(Message::BackContext));
+        if let Some(page) = &self.main_page {
+            view = view.push(
+                widget::button::text(fl!("reading-back"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::BackContext),
+            );
+            if !matches!(page, ContextPage::Account(_) | ContextPage::Status(_)) {
+                view = view.push(widget::text::title3(page.title()));
+            }
         }
-        view.push(content).into()
+        let content = if matches!(
+            self.main_page,
+            Some(ContextPage::Account(_) | ContextPage::Status(_))
+        ) {
+            widget::scrollable(content).height(Length::Fill).into()
+        } else {
+            content
+        };
+        view.push(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn status(&self, _id: &String) -> Element<'_, Message> {

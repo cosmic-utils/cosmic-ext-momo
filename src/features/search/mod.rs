@@ -130,7 +130,9 @@ impl Search {
         // feed (with a way back), rather than piling it below the results.
         if let Some(timeline) = &self.tag_timeline {
             return widget::column![
-                widget::button::standard(crate::fl!("search-back")).on_press(Message::DeselectTag),
+                widget::button::text(crate::fl!("reading-back"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::DeselectTag),
                 timeline.view(cache).map(Message::Timeline),
             ]
             .spacing(spacing.space_xs)

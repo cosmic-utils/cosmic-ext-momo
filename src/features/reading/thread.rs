@@ -35,17 +35,16 @@ impl Thread {
         }
         let mut items = widget::column![].spacing(spacing.space_s);
         for (ids, label) in [
-            (self.ancestors.as_slice(), fl!("reading-ancestors")),
-            (
-                std::slice::from_ref(&self.root),
-                fl!("reading-selected-post"),
-            ),
-            (self.descendants.as_slice(), fl!("reading-replies")),
+            (self.ancestors.as_slice(), Some(fl!("reading-ancestors"))),
+            (std::slice::from_ref(&self.root), None),
+            (self.descendants.as_slice(), Some(fl!("reading-replies"))),
         ] {
             if ids.is_empty() {
                 continue;
             }
-            items = items.push(widget::text::heading(label));
+            if let Some(label) = label {
+                items = items.push(widget::text::heading(label));
+            }
             for id in ids {
                 if let Some(post) = cache.statuses.get(id) {
                     if cache

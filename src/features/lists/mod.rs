@@ -91,7 +91,7 @@ impl Lists {
         if let Some(timeline) = &self.selected {
             let serial = self.selection_serial;
             return widget::column![
-                widget::button::standard(crate::fl!("reading-back"))
+                widget::button::text(crate::fl!("reading-back"))
                     .leading_icon(widget::icon::from_name("go-previous-symbolic"))
                     .on_press(Message::Deselect),
                 timeline

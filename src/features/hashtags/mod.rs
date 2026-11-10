@@ -75,7 +75,9 @@ impl Hashtags {
         // (with a way back), rather than showing both at once.
         if let Some(timeline) = &self.selected {
             return widget::column![
-                widget::button::standard(crate::fl!("tags-back")).on_press(Message::Deselect),
+                widget::button::text(crate::fl!("reading-back"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::Deselect),
                 timeline.view(cache).map(Message::Timeline),
             ]
             .spacing(spacing.space_xs)

@@ -388,8 +388,11 @@ impl State {
             content = content.push(widget::text(error.text()));
         }
         if matches!(self.step, Step::Server | Step::Authorize) {
-            content =
-                content.push(widget::button::standard(fl!("setup-back")).on_press(Message::Back));
+            content = content.push(
+                widget::button::text(fl!("reading-back"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::Back),
+            );
         }
         widget::container(widget::scrollable(content))
             .max_width(600)
