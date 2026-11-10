@@ -63,6 +63,7 @@ jobs:
           export VERSION="${RELEASE_TAG//\//-}"
           export ARCH=x86_64
           export OUTPUT="Toot-${VERSION}-${ARCH}.AppImage"
+          export LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Toot-*-${ARCH}.AppImage.zsync"
           "$RUNNER_TEMP/appimage-tools/linuxdeploy-x86_64.AppImage" \
             --appdir "$appdir" \
             --desktop-file "$appdir/usr/share/applications/dev.edfloreshz.Toot.desktop" \
@@ -70,13 +71,17 @@ jobs:
             --plugin gstreamer \
             --output appimage
           test -s "$OUTPUT"
+          test -s "$OUTPUT.zsync"
           chmod +x "$OUTPUT"
-          sha256sum -- *.AppImage > SHA256SUMS
+          sha256sum -- *.AppImage *.AppImage.zsync > SHA256SUMS
       - name: Check packaged files
         run: |
           cd dist
           sha256sum --check SHA256SUMS
           image="$(realpath -- ./*.AppImage)"
+          expected_update_info="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${GITHUB_REPOSITORY#*/}|latest|Toot-*-x86_64.AppImage.zsync"
+          readelf --string-dump=.upd_info "$image" | grep -F -- "$expected_update_info"
+          grep -Fx -- "Filename: $(basename "$image")" "$image.zsync"
           mkdir -p "$RUNNER_TEMP/appimage-check"
           cd "$RUNNER_TEMP/appimage-check"
           "$image" --appimage-extract > /dev/null
@@ -91,8 +96,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/*.AppImage dist/SHA256SUMS --clobber
+            gh release upload "$RELEASE_TAG" dist/*.AppImage dist/*.AppImage.zsync dist/SHA256SUMS --clobber
           else
-            gh release create "$RELEASE_TAG" dist/*.AppImage dist/SHA256SUMS \
+            gh release create "$RELEASE_TAG" dist/*.AppImage dist/*.AppImage.zsync dist/SHA256SUMS \
               --verify-tag --title "$RELEASE_TAG" --generate-notes
           fi
