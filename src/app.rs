@@ -261,9 +261,14 @@ pub enum Message {
     Surface(cosmic::surface::Action<Message>),
     NavigateMedia(bool),
     VideoTick,
+    VideoFrameUploaded(
+        cosmic::iced::core::image::Id,
+        Result<cosmic::iced::runtime::image::Allocation, cosmic::iced::runtime::image::Error>,
+    ),
     VideoPause,
     VideoMute,
     VideoSeek(f64),
+    VideoSeekReleased,
     /// Periodic tick: flush every feed's cache to disk if anything changed.
     FlushCache,
     SaveDraft,
@@ -2026,7 +2031,19 @@ impl Application for AppModel {
             }
             Message::VideoTick => {
                 if let Some(video) = &mut self.video {
-                    video.tick();
+                    if let Some(frame) = video.tick() {
+                        let id = frame.id();
+                        tasks.push(
+                            cosmic::iced::runtime::image::allocate(frame)
+                                .map(move |result| Message::VideoFrameUploaded(id, result))
+                                .map(cosmic::Action::App),
+                        );
+                    }
+                }
+            }
+            Message::VideoFrameUploaded(id, result) => {
+                if let Some(video) = &mut self.video {
+                    video.frame_uploaded(id, result);
                 }
             }
             Message::VideoPause => {
@@ -2041,7 +2058,12 @@ impl Application for AppModel {
             }
             Message::VideoSeek(position) => {
                 if let Some(video) = &mut self.video {
-                    video.seek(position);
+                    video.scrub(position);
+                }
+            }
+            Message::VideoSeekReleased => {
+                if let Some(video) = &mut self.video {
+                    video.finish_scrub();
                 }
             }
             Message::NavigateMedia(forward) => {
@@ -3510,7 +3532,7 @@ impl AppModel {
         let handle = self
             .video
             .as_ref()
-            .and_then(|video| video.frame.as_ref())
+            .and_then(crate::media::Player::frame)
             .or_else(|| attachment.cached_image(&self.cache.handles));
         let image: Element<'_, Message> = if attachment.video && failed {
             widget::text(fl!("media-playback-error")).into()
@@ -3590,15 +3612,16 @@ impl AppModel {
                     .push(
                         widget::slider(
                             0.0..=video.duration as f32,
-                            video.position.min(video.duration) as f32,
+                            video.display_position().min(video.duration) as f32,
                             |value| Message::VideoSeek(value as f64),
                         )
+                        .on_release(Message::VideoSeekReleased)
                         .width(180),
                     )
                     .push(widget::text(format!(
                         "{}:{:02} / {}:{:02}",
-                        video.position as u64 / 60,
-                        video.position as u64 % 60,
+                        video.display_position() as u64 / 60,
+                        video.display_position() as u64 % 60,
                         video.duration as u64 / 60,
                         video.duration as u64 % 60
                     )));

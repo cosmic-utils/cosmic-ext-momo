@@ -1,5 +1,6 @@
 //! Attachment metadata and an owned, bounded GStreamer video player.
-use cosmic::widget::image::Handle;
+use cosmic::iced::core::image::Id;
+use cosmic::iced::core::image::{Allocation, Handle};
 use gstreamer as gst;
 use gstreamer_video::prelude::*;
 
@@ -46,12 +47,15 @@ impl Attachment {
 pub struct Player {
     pipeline: gst::Element,
     sink: gstreamer_app::AppSink,
-    pub frame: Option<Handle>,
+    // Keep the allocation alive so the renderer cannot evict the displayed frame.
+    frame: Option<Allocation>,
+    pending_frame: Option<Id>,
     pub paused: bool,
     pub muted: bool,
     pub ended: bool,
     pub error: bool,
     pub position: f64,
+    scrub_position: Option<f64>,
     pub duration: f64,
     looping: bool,
 }
@@ -78,11 +82,13 @@ impl Player {
             pipeline,
             sink,
             frame: None,
+            pending_frame: None,
             paused: false,
             muted: looping,
             ended: false,
             error: false,
             position: 0.0,
+            scrub_position: None,
             duration: 0.0,
             looping,
         };
@@ -99,16 +105,37 @@ impl Player {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 
-    pub fn tick(&mut self) {
-        if self.error {
+    pub fn frame(&self) -> Option<&Handle> {
+        self.frame.as_ref().map(Allocation::handle)
+    }
+
+    /// Publish only uploaded frames, ignoring replies from a previously opened player.
+    pub fn frame_uploaded(
+        &mut self,
+        id: Id,
+        result: Result<Allocation, cosmic::iced::runtime::image::Error>,
+    ) {
+        if self.pending_frame != Some(id) || self.error {
             return;
+        }
+        self.pending_frame = None;
+        match result {
+            Ok(frame) => self.frame = Some(frame),
+            Err(_) => self.fail(),
+        }
+    }
+
+    /// Return at most one frame for upload, retaining the visible frame until completion.
+    pub fn tick(&mut self) -> Option<Handle> {
+        if self.error {
+            return None;
         }
         if let Some(bus) = self.pipeline.bus() {
             while let Some(message) = bus.pop() {
                 match message.view() {
                     gst::MessageView::Error(_) => {
                         self.fail();
-                        return;
+                        return None;
                     }
                     gst::MessageView::Eos(_) => {
                         if self.looping {
@@ -123,36 +150,59 @@ impl Player {
                 }
             }
         }
-        if let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
-            let frame = (|| {
-                let info = gstreamer_video::VideoInfo::from_caps(sample.caps()?).ok()?;
-                let frame = gstreamer_video::VideoFrameRef::from_buffer_ref_readable(
-                    sample.buffer()?,
-                    &info,
-                )
-                .ok()?;
-                let data = frame.plane_data(0).ok()?;
-                let stride = usize::try_from(frame.plane_stride()[0]).ok()?;
-                let width = info.width() as usize * 4;
-                let height = info.height() as usize;
-                let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
-                for y in 0..height {
-                    pixels.extend_from_slice(data.get(y * stride..y * stride + width)?);
-                }
-                Some(Handle::from_rgba(info.width(), info.height(), pixels))
-            })();
-            if let Some(frame) = frame {
-                self.frame = Some(frame);
-            }
+        // AppSink retains only the latest decoded sample while an upload is pending.
+        // This bounds memory and avoids queuing obsolete frames when rendering is slow.
+        let next_frame = if self.pending_frame.is_none() {
+            self.sink
+                .try_pull_sample(gst::ClockTime::ZERO)
+                .and_then(|sample| {
+                    let info = gstreamer_video::VideoInfo::from_caps(sample.caps()?).ok()?;
+                    let frame = gstreamer_video::VideoFrameRef::from_buffer_ref_readable(
+                        sample.buffer()?,
+                        &info,
+                    )
+                    .ok()?;
+                    let data = frame.plane_data(0).ok()?;
+                    let stride = usize::try_from(frame.plane_stride()[0]).ok()?;
+                    let width = info.width() as usize * 4;
+                    let height = info.height() as usize;
+                    let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
+                    for y in 0..height {
+                        pixels.extend_from_slice(data.get(y * stride..y * stride + width)?);
+                    }
+                    Some(Handle::from_rgba(info.width(), info.height(), pixels))
+                })
+        } else {
+            None
+        };
+        if let Some(frame) = &next_frame {
+            self.pending_frame = Some(frame.id());
         }
         self.position = self
             .pipeline
             .query_position::<gst::ClockTime>()
-            .map_or(0.0, |t| t.nseconds() as f64 / 1e9);
+            .map_or(self.position, |t| t.nseconds() as f64 / 1e9);
         self.duration = self
             .pipeline
             .query_duration::<gst::ClockTime>()
-            .map_or(0.0, |t| t.nseconds() as f64 / 1e9);
+            .map_or(self.duration, |t| t.nseconds() as f64 / 1e9);
+        next_frame
+    }
+
+    pub fn display_position(&self) -> f64 {
+        self.scrub_position.unwrap_or(self.position)
+    }
+
+    pub fn scrub(&mut self, seconds: f64) {
+        if !self.error && seconds.is_finite() {
+            self.scrub_position = Some(seconds.clamp(0.0, self.duration));
+        }
+    }
+
+    pub fn finish_scrub(&mut self) {
+        if let Some(position) = self.scrub_position.take() {
+            self.seek(position);
+        }
     }
 
     pub fn toggle_pause(&mut self) {
@@ -186,12 +236,13 @@ impl Player {
         if self
             .pipeline
             .seek_simple(
-                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
                 gst::ClockTime::from_nseconds((seconds.max(0.0) * 1e9) as u64),
             )
             .is_ok()
         {
             self.ended = false;
+            self.position = seconds.max(0.0);
         }
     }
 }
@@ -274,13 +325,20 @@ mod tests {
         assert!(matches!(message.view(), gst::MessageView::Eos(_)));
         let url = reqwest::Url::from_file_path(&path).unwrap();
         let mut player = Player::new(url.as_str(), false).unwrap();
+        let mut decoded_frames = 0;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !player.ended && !player.error && Instant::now() < deadline {
-            player.tick();
+            if let Some(frame) = player.tick() {
+                assert_eq!(player.pending_frame, Some(frame.id()));
+                assert!(player.frame().is_none());
+                decoded_frames += 1;
+                // This headless decoder test has no renderer to acknowledge uploads.
+                player.pending_frame = None;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!player.error);
-        assert!(player.frame.is_some());
+        assert!(decoded_frames > 1);
         assert!(player.duration > 0.0);
         assert!(player.ended && player.paused);
         player.toggle_mute();
@@ -289,11 +347,93 @@ mod tests {
         assert!(!player.ended && !player.paused);
         player.toggle_pause();
         assert!(player.paused);
-        player.seek(0.5);
+        player.scrub(0.2);
+        let _ = player.tick();
+        assert_eq!(player.display_position(), 0.2);
+        player.scrub(0.5);
+        let _ = player.tick();
+        assert_eq!(player.display_position(), 0.5);
+        player.finish_scrub();
+        assert!(player.scrub_position.is_none());
+        assert_eq!(player.display_position(), 0.5);
+        let (result, _, _) = player.pipeline.state(gst::ClockTime::from_seconds(5));
+        result.unwrap();
+        let actual = player.pipeline.query_position::<gst::ClockTime>().unwrap();
+        assert!(actual >= gst::ClockTime::from_mseconds(450));
+        assert!(actual <= gst::ClockTime::from_mseconds(550));
         let pipeline = player.pipeline.clone();
         drop(player);
         assert_eq!(pipeline.current_state(), gst::State::Null);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn large_frames_wait_for_upload_and_stale_completions_are_ignored() {
+        gst::init().unwrap();
+        let pipeline = gst::parse::launch(
+            "videotestsrc is-live=true ! video/x-raw,format=RGBA,width=1080,height=1920,framerate=30/1 ! appsink name=frames",
+        ).unwrap().downcast::<gst::Pipeline>().unwrap();
+        // Use the same bounded sink behavior as the player without a codec dependency.
+        let sink = {
+            let existing = pipeline.by_name("frames").unwrap();
+            let existing = existing.downcast::<gstreamer_app::AppSink>().unwrap();
+            existing.set_max_buffers(1);
+            existing.set_drop(true);
+            existing
+        };
+        let mut player = Player {
+            pipeline: pipeline.upcast(),
+            sink,
+            frame: None,
+            pending_frame: None,
+            paused: false,
+            muted: true,
+            ended: false,
+            error: false,
+            position: 0.0,
+            scrub_position: None,
+            duration: 0.0,
+            looping: false,
+        };
+        player.pipeline.set_state(gst::State::Playing).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let frame = loop {
+            if let Some(frame) = player.tick() {
+                break frame;
+            }
+            assert!(!player.error && Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let Handle::Rgba {
+            width,
+            height,
+            ref pixels,
+            ..
+        } = frame
+        else {
+            panic!("expected decoded pixels");
+        };
+        assert_eq!((width, height), (1080, 1920));
+        assert!(pixels.len() > 2 * 1024 * 1024);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(player.tick().is_none(), "only one upload may be in flight");
+        assert!(
+            player.frame().is_none(),
+            "unallocated frames must not be displayed"
+        );
+        let stale_id = Handle::from_rgba(1, 1, vec![0; 4]).id();
+        player.frame_uploaded(
+            stale_id,
+            Err(cosmic::iced::runtime::image::Error::OutOfMemory),
+        );
+        assert!(!player.error);
+        assert_eq!(player.pending_frame, Some(frame.id()));
+        player.frame_uploaded(
+            frame.id(),
+            Err(cosmic::iced::runtime::image::Error::OutOfMemory),
+        );
+        assert!(player.error);
+        assert_eq!(player.pipeline.current_state(), gst::State::Null);
     }
 
     #[test]
