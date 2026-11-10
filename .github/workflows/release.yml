@@ -1,0 +1,98 @@
+name: Release AppImage
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      CARGO_INCREMENTAL: 0
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libsecret-1-dev \
+            libxkbcommon-dev libwayland-dev libudev-dev libinput-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-tools \
+            desktop-file-utils appstream dbus-daemon patchelf file
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: appimage
+      - name: Validate and build
+        run: |
+          desktop-file-validate res/app.desktop
+          appstreamcli validate --no-net res/dev.edfloreshz.Toot.metainfo.xml
+          cargo test --locked
+          cargo build --release --locked
+          cargo install just --locked
+      - name: Download AppImage packaging tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimage-tools"
+          cd "$RUNNER_TEMP/appimage-tools"
+          curl --fail --location --retry 3 --output linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl --fail --location --retry 3 --output linuxdeploy-plugin-gstreamer.sh \
+            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/432af639725bc8b99df12351e86bb2e8a6b3585f/linuxdeploy-plugin-gstreamer.sh
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gstreamer.sh
+      - name: Build AppImage
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          appdir="$RUNNER_TEMP/Toot.AppDir"
+          just rootdir="$appdir" prefix=/usr install
+          install -Dm0644 LICENSE "$appdir/usr/share/licenses/cosmic-ext-toot/LICENSE"
+          mkdir -p dist
+          cd dist
+          export VERSION="${RELEASE_TAG//\//-}"
+          export ARCH=x86_64
+          export OUTPUT="Toot-${VERSION}-${ARCH}.AppImage"
+          "$RUNNER_TEMP/appimage-tools/linuxdeploy-x86_64.AppImage" \
+            --appdir "$appdir" \
+            --desktop-file "$appdir/usr/share/applications/dev.edfloreshz.Toot.desktop" \
+            --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Toot.svg" \
+            --plugin gstreamer \
+            --output appimage
+          test -s "$OUTPUT"
+          chmod +x "$OUTPUT"
+          sha256sum -- *.AppImage > SHA256SUMS
+      - name: Check packaged files
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          image="$(realpath -- ./*.AppImage)"
+          mkdir -p "$RUNNER_TEMP/appimage-check"
+          cd "$RUNNER_TEMP/appimage-check"
+          "$image" --appimage-extract > /dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/bin/cosmic-ext-toot
+          test -f squashfs-root/usr/share/metainfo/dev.edfloreshz.Toot.metainfo.xml
+          test -f squashfs-root/usr/lib/gstreamer-1.0/libgstvpx.so
+          test -f squashfs-root/usr/lib/gstreamer-1.0/libgstlibav.so
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.AppImage dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.AppImage dist/SHA256SUMS \
+              --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi
