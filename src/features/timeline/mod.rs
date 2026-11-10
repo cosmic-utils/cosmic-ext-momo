@@ -66,6 +66,7 @@ impl TimelineKind {
 pub struct Timeline {
     pub mastodon: Client,
     kind: TimelineKind,
+    display_title: Option<String>,
     statuses: VecDeque<String>,
     max_id: Option<String>,
     /// Whether a page-load (initial or "load more") fetch is in flight.
@@ -101,6 +102,7 @@ impl Timeline {
         Self {
             mastodon,
             kind,
+            display_title: None,
             statuses: VecDeque::new(),
             max_id: None,
             loading: false,
@@ -114,6 +116,11 @@ impl Timeline {
         }
     }
 
+    pub fn with_title(mut self, title: String) -> Self {
+        self.display_title = Some(title);
+        self
+    }
+
     pub fn is_authenticated(&self) -> bool {
         self.mastodon.is_authenticated()
     }
@@ -123,7 +130,9 @@ impl Timeline {
     /// Call [`Timeline::load_cached`] afterward to repopulate from disk.
     pub fn reset(&mut self, mastodon: Client) {
         let request = self.request + 1;
+        let title = self.display_title.clone();
         *self = Self::new(mastodon, self.kind.clone());
+        self.display_title = title;
         self.request = request;
     }
 
@@ -164,6 +173,9 @@ impl Timeline {
     }
 
     fn title(&self) -> String {
+        if let Some(title) = &self.display_title {
+            return title.clone();
+        }
         match &self.kind {
             TimelineKind::Home => fl!("home"),
             TimelineKind::Public => fl!("explore"),
