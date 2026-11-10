@@ -3023,14 +3023,32 @@ impl AppModel {
             }
         }
         self.sessions.active = index;
+        let mut tasks = vec![self.activate_session(Some(session))];
+        if let Err(err) = self.persist_sessions() {
+            tasks.push(cosmic::task::message(Message::Error(format!(
+                "Couldn't save session: {err}"
+            ))));
+        }
+        Task::batch(tasks)
+    }
+
+    fn activate_session(&mut self, session: Option<Session>) -> Task<Message> {
         let onboarding_completed = self.config.onboarding_completed;
-        self.config = session.preferences.clone().unwrap_or_else(|| TootConfig {
-            server: self.config.server.clone(),
-            ..Default::default()
-        });
+        self.config = session
+            .as_ref()
+            .and_then(|session| session.preferences.clone())
+            .unwrap_or_else(|| TootConfig {
+                server: self.config.server.clone(),
+                ..Default::default()
+            });
         self.config.onboarding_completed = onboarding_completed;
-        self.instance = session.base_url.clone();
-        self.mastodon = Client::from_session(&session);
+        self.mastodon = match session {
+            Some(session) => {
+                self.instance = session.base_url.clone();
+                Client::from_session(&session)
+            }
+            None => Client::new(self.instance(), None),
+        };
         self.cache.clear();
         self.cache.hide_boosts = self.config.hide_boosts;
         self.cache.hide_replies = self.config.hide_replies;
@@ -3040,13 +3058,11 @@ impl AppModel {
         let mut tasks = vec![
             self.reset_and_reload_feeds(),
             self.on_nav_select(self.nav.active()),
+            cosmic::command::set_theme(self.config.theme_mode.theme()),
         ];
-        if let Err(err) = self.persist_sessions() {
-            tasks.push(cosmic::task::message(Message::Error(format!(
-                "Couldn't save session: {err}"
-            ))));
+        if self.mastodon.is_authenticated() {
+            tasks.push(fetch_session_info(self.mastodon.clone()));
         }
-        tasks.push(fetch_session_info(self.mastodon.clone()));
         Task::batch(tasks)
     }
 
@@ -3084,21 +3100,7 @@ impl AppModel {
         }
 
         if was_active {
-            match self.sessions.active_session().cloned() {
-                Some(session) => {
-                    self.mastodon = Client::from_session(&session);
-                }
-                None => {
-                    self.mastodon = Client::new(self.instance(), None);
-                }
-            }
-            self.cache.clear();
-            self.cache.hide_boosts = self.config.hide_boosts;
-            self.cache.hide_replies = self.config.hide_replies;
-            self.cache.feed_density = self.config.feed_density;
-            self.update_navbar();
-            tasks.push(self.reset_and_reload_feeds());
-            tasks.push(self.on_nav_select(self.nav.active()));
+            tasks.push(self.activate_session(self.sessions.active_session().cloned()));
         }
         Task::batch(tasks)
     }
