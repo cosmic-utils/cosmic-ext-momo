@@ -146,19 +146,25 @@ impl Notifications {
         }
         Task::batch(tasks)
     }
-    pub fn save_cached(&self, cache: &Cache) {
+    pub fn snapshot(&self, cache: &Cache) -> Option<crate::persistence::Snapshot> {
         if self.is_authenticated() && self.mastodon.account_id.is_empty() {
-            return;
+            return None;
         }
         let mut items: Vec<_> = self
             .new
             .iter()
             .chain(&self.notifications)
-            .filter_map(|id| cache.notifications.get(id).cloned())
+            .filter_map(|id| cache.notifications.get(id))
             .collect();
         items.sort_by_key(|n| std::cmp::Reverse(n.created_at));
         items.dedup_by(|a, b| a.id == b.id);
-        crate::persistence::save_notification_snapshot(&self.mastodon.cache_key(), &items);
+        Some(crate::persistence::Snapshot::Notifications(
+            items
+                .into_iter()
+                .take(crate::persistence::MAX_NOTIFICATIONS)
+                .cloned()
+                .collect(),
+        ))
     }
     fn remove(&mut self, ids: &[String]) {
         self.dismissed.extend(ids.iter().cloned());

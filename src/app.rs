@@ -170,6 +170,10 @@ pub struct AppModel {
     compose_store: compose::store::Store,
     drafts: Vec<compose::State>,
     drafts_readable: bool,
+    draft_revision: u64,
+    draft_save_due: Option<std::time::Instant>,
+    draft_saving: bool,
+    cache_saving: bool,
     compose_request: u64,
     completion_serial: u64,
     home: Timeline,
@@ -262,6 +266,9 @@ pub enum Message {
     VideoSeek(f64),
     /// Periodic tick: flush every feed's cache to disk if anything changed.
     FlushCache,
+    SaveDraft,
+    DraftSaved(u64, Result<(), String>),
+    CacheSaved(Result<(), String>),
     None,
 }
 
@@ -434,6 +441,10 @@ impl Application for AppModel {
             compose_store: compose::store::Store::default(),
             drafts: vec![],
             drafts_readable: true,
+            draft_revision: 0,
+            draft_save_due: None,
+            draft_saving: false,
+            cache_saving: false,
             compose_request: 0,
             completion_serial: 0,
             home: Timeline::new(mastodon.clone(), TimelineKind::Home),
@@ -1093,6 +1104,13 @@ impl Application for AppModel {
             cosmic::iced::time::every(std::time::Duration::from_secs(30))
                 .map(|_| Message::FlushCache),
         );
+
+        if self.draft_save_due.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_millis(250))
+                    .map(|_| Message::SaveDraft),
+            );
+        }
 
         if self
             .active_compose()
@@ -2092,7 +2110,7 @@ impl Application for AppModel {
                             state.text = text;
                             state.changed();
                         }
-                        self.persist_active_draft();
+                        self.stage_active_draft();
                     }
                 }
             }
@@ -2110,7 +2128,48 @@ impl Application for AppModel {
             Message::CloseToast(id) => {
                 self.toasts.remove(id);
             }
-            Message::FlushCache => self.flush_cache_to_disk(),
+            Message::FlushCache => tasks.push(self.save_cache_in_background()),
+            Message::SaveDraft => {
+                if !self.draft_saving
+                    && self
+                        .draft_save_due
+                        .is_some_and(|due| due <= std::time::Instant::now())
+                {
+                    self.draft_saving = true;
+                    let revision = self.draft_revision;
+                    let store = self.compose_store.clone();
+                    let ticket = store.reserve_save();
+                    let account = self.mastodon.cache_key();
+                    let drafts = self.drafts.clone();
+                    tasks.push(cosmic::task::future(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            store.save_reserved(&account, &drafts, ticket)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err(fl!("compose-storage-error")));
+                        Message::DraftSaved(revision, result)
+                    }));
+                }
+            }
+            Message::DraftSaved(revision, result) => {
+                self.draft_saving = false;
+                if revision == self.draft_revision {
+                    self.draft_save_due = result
+                        .as_ref()
+                        .err()
+                        .map(|_| std::time::Instant::now() + std::time::Duration::from_secs(5));
+                    if let Some(state) = self.active_compose_mut() {
+                        state.storage_error = result.err();
+                    }
+                }
+            }
+            Message::CacheSaved(result) => {
+                self.cache_saving = false;
+                if let Err(error) = result {
+                    self.cache.dirty = true;
+                    tracing::warn!("failed to save feed snapshots: {error}");
+                }
+            }
             Message::MyProfile => {
                 if let Some(account) = self.cache.me.clone() {
                     tasks.push(
@@ -2192,7 +2251,7 @@ impl AppModel {
             }
         }
     }
-    fn persist_active_draft(&mut self) -> bool {
+    fn stage_active_draft(&mut self) -> bool {
         let Some(state) = self.active_compose().cloned() else {
             return true;
         };
@@ -2220,9 +2279,26 @@ impl AppModel {
         } else {
             self.drafts.push(state);
         }
+        self.draft_revision += 1;
+        self.draft_save_due =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+        true
+    }
+
+    fn persist_active_draft(&mut self) -> bool {
+        if !self.stage_active_draft() {
+            return false;
+        }
+        if self.active_compose().is_none() {
+            return true;
+        }
+        let key = self.mastodon.cache_key();
         let result = self.compose_store.save(&key, &self.drafts);
         if let Some(state) = self.active_compose_mut() {
             state.storage_error = result.as_ref().err().cloned();
+        }
+        if result.is_ok() {
+            self.draft_save_due = None;
         }
         result.is_ok()
     }
@@ -2295,6 +2371,8 @@ impl AppModel {
         let key = self.mastodon.cache_key();
         self.compose_store.save(&key, &candidate)?;
         self.drafts = candidate;
+        self.draft_revision += 1;
+        self.draft_save_due = None;
         self.compose_store.remove_assets(&key, id);
         Ok(())
     }
@@ -2574,7 +2652,7 @@ impl AppModel {
                             let ids: Vec<_> = media.iter().map(|m| m.id.clone()).collect();
                             state.media.extend(media);
                             state.changed();
-                            self.persist_active_draft();
+                            self.stage_active_draft();
                             return Task::batch(
                                 ids.into_iter().map(|id| {
                                     cosmic::task::message(Message::Compose(C::Upload(id)))
@@ -2584,7 +2662,7 @@ impl AppModel {
                         Err(error) => state.error = Some(error),
                     }
                 }
-                self.persist_active_draft();
+                self.stage_active_draft();
             }
             C::Upload(id) => {
                 let Some(state) = self.active_compose().filter(|state| state.accepts_edits())
@@ -2648,7 +2726,7 @@ impl AppModel {
                         }
                     }
                 }
-                self.persist_active_draft();
+                self.stage_active_draft();
                 return cosmic::task::message(Message::Fetch(previews));
             }
             C::Submit => {
@@ -2795,7 +2873,7 @@ impl AppModel {
                     }
                     state.changed();
                 }
-                self.persist_active_draft();
+                self.stage_active_draft();
             }
             C::Tick => (),
             change => {
@@ -2846,7 +2924,7 @@ impl AppModel {
                     }
                     state.changed();
                 }
-                self.persist_active_draft();
+                self.stage_active_draft();
             }
         }
         Task::none()
@@ -2967,6 +3045,9 @@ impl AppModel {
     /// active account's own disk cache, so switching accounts doesn't leave
     /// the previous account's posts visible until a fresh fetch lands.
     fn reset_and_reload_feeds(&mut self) -> Task<Message> {
+        self.draft_saving = false;
+        self.draft_save_due = None;
+        self.cache_saving = false;
         self.video = None;
         self.video_url = None;
         self.social = crate::features::social::Social::default();
@@ -3055,20 +3136,51 @@ impl AppModel {
         Task::batch(tasks)
     }
 
-    /// Save every feed's cached content to disk, if anything changed since
-    /// the last flush.
+    fn cache_snapshots(&self) -> Vec<crate::persistence::Snapshot> {
+        [
+            self.home.snapshot(&self.cache),
+            self.explore.snapshot(&self.cache),
+            self.local.snapshot(&self.cache),
+            self.federated.snapshot(&self.cache),
+            self.favorites.snapshot(&self.cache),
+            self.bookmarks.snapshot(&self.cache),
+            self.notifications.snapshot(&self.cache),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    fn save_cache_in_background(&mut self) -> Task<Message> {
+        if !self.cache.dirty || self.clearing_cache || self.cache_saving {
+            return Task::none();
+        }
+        let snapshots = self.cache_snapshots();
+        let account = self.mastodon.cache_key();
+        let revision = crate::persistence::reserve_snapshot_save();
+        self.cache.dirty = false;
+        self.cache_saving = true;
+        cosmic::task::future(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::persistence::save_snapshots(&account, revision, snapshots)
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+            Message::CacheSaved(result)
+        })
+    }
+
+    // Account changes and exit need a completed snapshot before proceeding.
     fn flush_cache_to_disk(&mut self) {
-        if !self.cache.dirty || self.clearing_cache {
+        if (!self.cache.dirty && !self.cache_saving) || self.clearing_cache {
             return;
         }
-        self.home.save_cached(&self.cache);
-        self.explore.save_cached(&self.cache);
-        self.local.save_cached(&self.cache);
-        self.federated.save_cached(&self.cache);
-        self.favorites.save_cached(&self.cache);
-        self.bookmarks.save_cached(&self.cache);
-        self.notifications.save_cached(&self.cache);
-        self.cache.dirty = false;
+        let snapshots = self.cache_snapshots();
+        let revision = crate::persistence::reserve_snapshot_save();
+        match crate::persistence::save_snapshots(&self.mastodon.cache_key(), revision, snapshots) {
+            Ok(()) => self.cache.dirty = false,
+            Err(error) => tracing::warn!("failed to save feed snapshots: {error}"),
+        }
     }
 
     /// Switch to the saved account at `index`, resetting per-account state.

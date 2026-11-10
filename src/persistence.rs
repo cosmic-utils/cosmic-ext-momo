@@ -12,8 +12,8 @@ use crate::app::AppModel;
 
 /// Cap on how many items are persisted per feed, matching existing
 /// pagination page sizes.
-const MAX_STATUSES: usize = 200;
-const MAX_NOTIFICATIONS: usize = 100;
+pub const MAX_STATUSES: usize = 200;
+pub const MAX_NOTIFICATIONS: usize = 100;
 /// Cap on how many distinct hashtag/list snapshot files are kept.
 const MAX_SCOPED_FILES: usize = 5;
 
@@ -42,17 +42,56 @@ fn snapshot_path(base_url: &str, slug: &str) -> Option<PathBuf> {
 
 /// Save a bounded slice of items to disk as JSON. Errors are logged, not
 /// surfaced — a failed cache write should never interrupt the user.
-pub fn save_snapshot<T: Serialize>(base_url: &str, slug: &str, items: &[T], max_items: usize) {
-    let Some(path) = snapshot_path(base_url, slug) else {
-        return;
-    };
+fn save_snapshot<T: Serialize>(
+    base_url: &str,
+    slug: &str,
+    items: &[T],
+    max_items: usize,
+) -> std::io::Result<()> {
+    let path = snapshot_path(base_url, slug)
+        .ok_or_else(|| std::io::Error::other("cache directory unavailable"))?;
     let bounded = &items[..max_items.min(items.len())];
-    let result = serde_json::to_vec(bounded)
-        .map_err(std::io::Error::other)
-        .and_then(|data| write_snapshot(&path, &data));
-    if let Err(error) = result {
-        tracing::warn!("failed to save cache snapshot: {error}");
+    let data = serde_json::to_vec(bounded).map_err(std::io::Error::other)?;
+    write_snapshot(&path, &data)
+}
+
+pub enum Snapshot {
+    Statuses(String, Vec<megalodon::entities::Status>),
+    Notifications(Vec<megalodon::entities::Notification>),
+}
+
+static SNAPSHOT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SNAPSHOT_WRITTEN: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, u64>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn reserve_snapshot_save() -> u64 {
+    SNAPSHOT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+pub fn save_snapshots(
+    account: &str,
+    revision: u64,
+    snapshots: Vec<Snapshot>,
+) -> Result<(), String> {
+    let mut written = SNAPSHOT_WRITTEN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if written.get(account).is_some_and(|saved| *saved > revision) {
+        return Ok(());
     }
+    written.insert(account.to_owned(), revision);
+    for snapshot in snapshots {
+        let result = match snapshot {
+            Snapshot::Statuses(slug, posts) => save_snapshot(account, &slug, &posts, MAX_STATUSES),
+            Snapshot::Notifications(items) => {
+                save_snapshot(account, "notifications", &items, MAX_NOTIFICATIONS)
+            }
+        };
+        result.map_err(|error| error.to_string())?;
+    }
+    prune_scoped_snapshots(account);
+    Ok(())
 }
 
 fn private_directory(path: &std::path::Path) -> std::io::Result<()> {
@@ -100,15 +139,6 @@ fn write_snapshot(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(temporary);
     }
     result
-}
-
-pub fn save_status_snapshot(base_url: &str, slug: &str, items: &[megalodon::entities::Status]) {
-    save_snapshot(base_url, slug, items, MAX_STATUSES);
-    prune_scoped_snapshots(base_url);
-}
-
-pub fn save_notification_snapshot(base_url: &str, items: &[megalodon::entities::Notification]) {
-    save_snapshot(base_url, "notifications", items, MAX_NOTIFICATIONS);
 }
 
 /// Load a previously-saved snapshot, if any. Returns an empty `Vec` on any
@@ -219,6 +249,10 @@ fn write_image(path: PathBuf, bytes: &[u8]) {
 
 /// Remove all cache files for an account, called on logout/account removal.
 pub fn clear_account(base_url: &str) {
+    let mut written = SNAPSHOT_WRITTEN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    written.insert(base_url.to_owned(), reserve_snapshot_save());
     if let Some(dir) = account_dir(base_url) {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -236,6 +270,10 @@ pub fn image_epoch() -> u64 {
 pub fn clear_cached_content(account: &str) -> std::io::Result<()> {
     let _guard = IMAGE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     IMAGE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut written = SNAPSHOT_WRITTEN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    written.insert(account.to_owned(), reserve_snapshot_save());
     if let Some(root) = cache_root() {
         clear_at(&root, account)?;
     }

@@ -155,22 +155,22 @@ impl Timeline {
         Task::batch(tasks)
     }
 
-    /// Persist the currently-cached statuses for this feed to disk.
-    pub fn save_cached(&self, cache: &Cache) {
+    pub fn snapshot(&self, cache: &Cache) -> Option<crate::persistence::Snapshot> {
         if self.mastodon.is_authenticated() && self.mastodon.account_id.is_empty() {
-            return;
+            return None;
         }
-        let statuses: Vec<Status> = self
+        let statuses = self
             .incoming
             .iter()
             .chain(&self.statuses)
-            .filter_map(|id| cache.statuses.get(id).cloned())
+            .filter_map(|id| cache.statuses.get(id))
+            .take(crate::persistence::MAX_STATUSES)
+            .cloned()
             .collect();
-        crate::persistence::save_status_snapshot(
-            &self.mastodon.cache_key(),
-            &self.kind.slug(),
-            &statuses,
-        );
+        Some(crate::persistence::Snapshot::Statuses(
+            self.kind.slug(),
+            statuses,
+        ))
     }
 
     fn title(&self) -> String {
