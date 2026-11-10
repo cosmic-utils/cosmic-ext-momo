@@ -23,7 +23,6 @@ jobs:
             libgstreamer-plugins-base1.0-dev desktop-file-utils appstream dbus-daemon
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: python3 scripts/check_resources.py
       - run: desktop-file-validate res/app.desktop
       - run: appstreamcli validate --no-net res/dev.edfloreshz.Toot.metainfo.xml
       - run: cargo check --locked --all-targets

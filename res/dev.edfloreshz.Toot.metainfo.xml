@@ -42,7 +42,7 @@
   <url type="vcs-browser">https://github.com/cosmic-utils/cosmic-ext-toot</url>
   <developer id="io.github.cosmic-utils"><name>Toot contributors</name></developer>
   <provides><binary>cosmic-ext-toot</binary></provides>
-  <categories><category>Network</category><category>InstantMessaging</category></categories>
+  <categories><category>Network</category></categories>
   <project_group>COSMIC</project_group>
   <content_rating type="oars-1.1"/>
 </component>
