@@ -230,3 +230,67 @@ fn saved_collection_changes_remove_rows_and_supersede_stale_pages() {
         assert_eq!(feed.statuses, ["3".to_string(), "2".to_string()]);
     }
 }
+
+#[test]
+fn paging_keeps_the_latest_loaded_window_and_bounds_stream_buffers() {
+    let mut feed = feed();
+    let initial: Vec<_> = (0..crate::cache::MAX_RETAINED_ITEMS)
+        .map(|id| post(&format!("a{id}")))
+        .collect();
+    let _ = feed.update(Message::PageLoaded(
+        0,
+        Ok(fetch::Page {
+            statuses: initial,
+            cursor: Some("older".into()),
+            more: true,
+        }),
+    ));
+    let _ = feed.update(Message::LoadMore);
+    let _ = feed.update(Message::PageLoaded(
+        feed.request,
+        Ok(fetch::Page {
+            statuses: (0..20).map(|id| post(&format!("b{id}"))).collect(),
+            cursor: Some("end".into()),
+            more: true,
+        }),
+    ));
+    assert_eq!(feed.statuses.len(), crate::cache::MAX_RETAINED_ITEMS);
+    assert_eq!(feed.statuses.front().map(String::as_str), Some("a20"));
+    assert_eq!(feed.statuses.back().map(String::as_str), Some("b19"));
+    for id in 0..crate::cache::MAX_BUFFERED_ITEMS + 20 {
+        let _ = feed.update(Message::IncomingStatus(post(&format!("live{id}"))));
+    }
+    assert_eq!(feed.incoming.len(), crate::cache::MAX_BUFFERED_ITEMS);
+    let _ = feed.update(Message::PublishNew);
+    assert_eq!(feed.statuses.len(), crate::cache::MAX_RETAINED_ITEMS);
+    assert_eq!(feed.statuses.front().map(String::as_str), Some("live119"));
+}
+
+#[test]
+fn cache_pruning_preserves_boost_originals_reader_posts_and_deletion_tombstones() {
+    let mut cache = Cache::new();
+    let mut original = post("original");
+    original.account.avatar = "keep-avatar".into();
+    let mut boost = post("boost");
+    boost.reblog = Some(Box::new(original));
+    cache.insert_status(boost);
+    cache.insert_status(post("reader"));
+    cache.insert_status(post("unused"));
+    cache.deleted.insert("deleted".into());
+    cache.insert_handle("keep-avatar".into(), crate::cache::fallback_handle());
+    cache.insert_handle("unused-avatar".into(), crate::cache::fallback_handle());
+    cache.retain_referenced(
+        HashSet::from(["boost".into(), "reader".into()]),
+        &HashSet::new(),
+        HashSet::new(),
+        HashSet::new(),
+    );
+    assert_eq!(cache.statuses.len(), 3);
+    assert!(cache.statuses.contains_key("original"));
+    assert!(cache.statuses.contains_key("reader"));
+    assert!(!cache.statuses.contains_key("unused"));
+    assert!(cache.handles.contains_key("keep-avatar"));
+    assert!(!cache.handles.contains_key("unused-avatar"));
+    cache.insert_status(post("deleted"));
+    assert!(!cache.statuses.contains_key("deleted"));
+}

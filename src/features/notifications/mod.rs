@@ -34,6 +34,7 @@ pub struct Notifications {
     pub mastodon: Client,
     notifications: VecDeque<String>,
     new: VecDeque<String>,
+    incoming_overflow: bool,
     max_id: Option<String>,
     loading: bool,
     has_loaded: bool,
@@ -99,6 +100,7 @@ impl Notifications {
             mastodon,
             notifications: VecDeque::new(),
             new: VecDeque::new(),
+            incoming_overflow: false,
             max_id: None,
             loading: false,
             has_loaded: false,
@@ -146,6 +148,10 @@ impl Notifications {
         }
         Task::batch(tasks)
     }
+    pub fn notification_ids(&self) -> impl Iterator<Item = &String> {
+        self.notifications.iter().chain(&self.new)
+    }
+
     pub fn snapshot(&self, cache: &Cache) -> Option<crate::persistence::Snapshot> {
         if self.is_authenticated() && self.mastodon.account_id.is_empty() {
             return None;
@@ -180,6 +186,10 @@ impl Notifications {
             if !self.notifications.contains(&id) {
                 self.notifications.push_front(id);
             }
+        }
+        if self.incoming_overflow {
+            self.incoming_overflow = false;
+            self.start_load(LoadKind::Refresh);
         }
     }
     fn start_load(&mut self, kind: LoadKind) {
@@ -358,6 +368,8 @@ impl Notifications {
     }
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         let mut tasks = vec![];
+        let paging_older =
+            matches!(&message, Message::PageLoaded(..)) && self.load_kind == LoadKind::Older;
         match message {
             Message::SetClient(client) => {
                 if self.mastodon != client {
@@ -556,6 +568,17 @@ impl Notifications {
             Message::Status(message) => return status::update(message),
             _ => (),
         }
+        let excess = self
+            .notifications
+            .len()
+            .saturating_sub(cache::MAX_RETAINED_ITEMS);
+        if paging_older {
+            self.notifications.drain(..excess);
+        } else {
+            self.notifications.truncate(cache::MAX_RETAINED_ITEMS);
+        }
+        self.incoming_overflow |= self.new.len() > cache::MAX_BUFFERED_ITEMS;
+        self.new.truncate(cache::MAX_BUFFERED_ITEMS);
         Task::batch(tasks)
     }
     pub fn subscription(&self) -> Subscription<Message> {

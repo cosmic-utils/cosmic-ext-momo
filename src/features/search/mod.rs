@@ -382,6 +382,23 @@ impl Search {
                 } else {
                     self.results = Some(results);
                 }
+                if let Some(results) = &mut self.results {
+                    let excess = results
+                        .accounts
+                        .len()
+                        .saturating_sub(cache::MAX_RETAINED_ITEMS);
+                    results.accounts.drain(..excess);
+                    let excess = results
+                        .hashtags
+                        .len()
+                        .saturating_sub(cache::MAX_RETAINED_ITEMS);
+                    results.hashtags.drain(..excess);
+                    let excess = results
+                        .statuses
+                        .len()
+                        .saturating_sub(cache::MAX_RETAINED_ITEMS);
+                    results.statuses.drain(..excess);
+                }
                 self.offset += 20;
                 self.loading_more = false;
 
@@ -524,6 +541,14 @@ impl Search {
                 Err(error) => app::Message::Search(Message::SearchFailed(request, error)),
             }
         })
+    }
+
+    pub fn results(&self) -> Option<&Results> {
+        self.results.as_ref()
+    }
+
+    pub fn timeline(&self) -> Option<&Timeline> {
+        self.tag_timeline.as_ref()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

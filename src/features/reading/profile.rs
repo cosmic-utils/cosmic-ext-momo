@@ -56,6 +56,11 @@ impl Profile {
                 self.posts.push(status.id.clone());
             }
         }
+        let excess = self
+            .posts
+            .len()
+            .saturating_sub(crate::cache::MAX_RETAINED_ITEMS);
+        self.posts.drain(..excess);
         self.loading = false;
         self.error = None;
     }

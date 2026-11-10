@@ -79,6 +79,7 @@ pub struct Timeline {
     more: bool,
     error: Option<String>,
     incoming: VecDeque<String>,
+    incoming_overflow: bool,
     removed: HashSet<String>,
 }
 
@@ -113,6 +114,7 @@ impl Timeline {
             more: true,
             error: None,
             incoming: VecDeque::new(),
+            incoming_overflow: false,
             removed: HashSet::new(),
         }
     }
@@ -153,6 +155,10 @@ impl Timeline {
             tasks.push(cache_status(status));
         }
         Task::batch(tasks)
+    }
+
+    pub fn status_ids(&self) -> impl Iterator<Item = &String> {
+        self.statuses.iter().chain(&self.incoming)
     }
 
     pub fn snapshot(&self, cache: &Cache) -> Option<crate::persistence::Snapshot> {
@@ -313,6 +319,7 @@ impl Timeline {
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         let mut tasks = vec![];
+        let paging_older = matches!(&message, Message::PageLoaded(..)) && self.older;
         match message {
             Message::SetClient(mastodon) => self.mastodon = mastodon,
             Message::Refresh if !self.loading => self.begin_load(false),
@@ -325,6 +332,10 @@ impl Timeline {
                     if !self.statuses.contains(&id) {
                         self.statuses.push_front(id);
                     }
+                }
+                if self.incoming_overflow {
+                    self.incoming_overflow = false;
+                    self.begin_load(false);
                 }
             }
             Message::IncomingStatus(post) => {
@@ -391,6 +402,17 @@ impl Timeline {
             Message::Status(message) => tasks.push(status::update(message)),
             _ => (),
         }
+        let excess = self
+            .statuses
+            .len()
+            .saturating_sub(cache::MAX_RETAINED_ITEMS);
+        if paging_older {
+            self.statuses.drain(..excess);
+        } else {
+            self.statuses.truncate(cache::MAX_RETAINED_ITEMS);
+        }
+        self.incoming_overflow |= self.incoming.len() > cache::MAX_BUFFERED_ITEMS;
+        self.incoming.truncate(cache::MAX_BUFFERED_ITEMS);
         Task::batch(tasks)
     }
 

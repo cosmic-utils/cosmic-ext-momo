@@ -1982,6 +1982,9 @@ impl Application for AppModel {
                     }
                     if let Some(previous) = self.main_page.replace(context_page) {
                         self.context_history.push(previous);
+                        if self.context_history.len() > 64 {
+                            self.context_history.remove(0);
+                        }
                     }
                     self.core.window.show_context = false;
                     tasks.push(self.load_reader());
@@ -3136,6 +3139,89 @@ impl AppModel {
         Task::batch(tasks)
     }
 
+    fn prune_cache(&mut self) {
+        let mut statuses: HashSet<String> = [
+            &self.home,
+            &self.explore,
+            &self.local,
+            &self.federated,
+            &self.favorites,
+            &self.bookmarks,
+        ]
+        .into_iter()
+        .chain(self.hashtags.timeline())
+        .chain(self.lists.timeline())
+        .chain(self.search.timeline())
+        .flat_map(Timeline::status_ids)
+        .cloned()
+        .collect();
+        let mut images = HashSet::new();
+        let mut accounts = HashSet::new();
+        let mut keep_account = |account: &Account| {
+            accounts.insert(account.id.clone());
+            images.extend([account.avatar.clone(), account.header.clone()]);
+        };
+        if let Some(account) = &self.cache.me {
+            keep_account(account);
+        }
+        for account in self.social.accounts() {
+            keep_account(account);
+        }
+        if let Some(results) = self.search.results() {
+            statuses.extend(results.statuses.iter().map(|post| post.id.clone()));
+            for account in &results.accounts {
+                keep_account(account);
+            }
+        }
+        statuses.extend(self.social.statuses().map(|post| post.id.clone()));
+        if let Some(thread) = &self.thread {
+            statuses.insert(thread.root.clone());
+            statuses.extend(thread.ancestors.iter().chain(&thread.descendants).cloned());
+        }
+        if let Some(profile) = &self.profile {
+            keep_account(&profile.account);
+            statuses.extend(profile.pinned.iter().chain(&profile.posts).cloned());
+        }
+        for page in self
+            .context_history
+            .iter()
+            .chain(self.main_page.iter())
+            .chain(std::iter::once(&self.context_page))
+        {
+            match page {
+                ContextPage::Status(id) => {
+                    statuses.insert(id.clone());
+                }
+                ContextPage::Account(account) => keep_account(account),
+                _ => (),
+            }
+        }
+        if let Some(state) = self.active_compose() {
+            statuses.extend(state.in_reply_to_id.iter().cloned());
+            images.extend(state.preview_urls());
+        }
+        if let Some(Dialog::Media(items, index)) = self.dialog_pages.front() {
+            images.extend(items.iter().filter_map(|item| item.preview.clone()));
+            if let Some(item) = items.get(*index) {
+                images.insert(item.url.clone());
+            }
+        }
+        let notifications = self.notifications.notification_ids().cloned().collect();
+        let images = self
+            .cache
+            .retain_referenced(statuses, &notifications, images, accounts);
+        self.image_queue.retain(|url| images.contains(url));
+        for url in images {
+            if !url.is_empty()
+                && !self.cache.handles.contains_key(&url)
+                && !self.image_inflight.contains(&url)
+                && !self.image_queue.contains(&url)
+            {
+                self.image_queue.push_back(url);
+            }
+        }
+    }
+
     fn cache_snapshots(&self) -> Vec<crate::persistence::Snapshot> {
         [
             self.home.snapshot(&self.cache),
@@ -3152,22 +3238,27 @@ impl AppModel {
     }
 
     fn save_cache_in_background(&mut self) -> Task<Message> {
+        self.prune_cache();
+        let images = self.drain_image_queue();
         if !self.cache.dirty || self.clearing_cache || self.cache_saving {
-            return Task::none();
+            return images;
         }
         let snapshots = self.cache_snapshots();
         let account = self.mastodon.cache_key();
         let revision = crate::persistence::reserve_snapshot_save();
         self.cache.dirty = false;
         self.cache_saving = true;
-        cosmic::task::future(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                crate::persistence::save_snapshots(&account, revision, snapshots)
-            })
-            .await
-            .unwrap_or_else(|error| Err(error.to_string()));
-            Message::CacheSaved(result)
-        })
+        Task::batch([
+            images,
+            cosmic::task::future(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::persistence::save_snapshots(&account, revision, snapshots)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+                Message::CacheSaved(result)
+            }),
+        ])
     }
 
     // Account changes and exit need a completed snapshot before proceeding.
