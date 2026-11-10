@@ -287,14 +287,31 @@ impl State {
         match self.step {
             Step::Welcome => {
                 content = content
-                    .push(widget::icon::from_name("dev.edfloreshz.Momo").size(96))
-                    .push(widget::text::title1(fl!("setup-welcome")))
-                    .push(widget::text(fl!("setup-welcome-description")))
+                    .align_x(cosmic::iced::Alignment::Center)
                     .push(
-                        widget::button::suggested(fl!("setup-add-account"))
-                            .on_press(Message::AddAccount),
+                        widget::icon(widget::icon::from_svg_bytes(
+                            include_bytes!("../../../res/icons/hicolor/scalable/apps/icon.svg")
+                                .as_slice(),
+                        ))
+                        .size(96),
                     )
-                    .push(widget::button::standard(fl!("setup-browse")).on_press(Message::Browse));
+                    .push(
+                        widget::text::title1(fl!("setup-welcome"))
+                            .align_x(cosmic::iced::alignment::Horizontal::Center),
+                    )
+                    .push(
+                        widget::text(fl!("setup-welcome-description"))
+                            .align_x(cosmic::iced::alignment::Horizontal::Center),
+                    )
+                    .push(
+                        widget::row![
+                            widget::button::suggested(fl!("setup-add-account"))
+                                .on_press(Message::AddAccount),
+                            widget::button::standard(fl!("setup-browse")).on_press(Message::Browse),
+                        ]
+                        .spacing(spacing.space_s)
+                        .align_y(cosmic::iced::Alignment::Center),
+                    );
             }
             Step::Server => {
                 let input = widget::text_input(fl!("server-url"), &self.server);
@@ -366,13 +383,15 @@ impl State {
                         Message::SelectAccount,
                     ));
                 }
-                content = content
-                    .push(widget::text(fl!("setup-more-accounts")))
-                    .push(
+                content = content.push(widget::text(fl!("setup-more-accounts"))).push(
+                    widget::row![
                         widget::button::standard(fl!("setup-add-another"))
                             .on_press(Message::AddAccount),
-                    )
-                    .push(widget::button::suggested(fl!("continue")).on_press(Message::Finish));
+                        widget::button::suggested(fl!("continue")).on_press(Message::Finish),
+                    ]
+                    .spacing(spacing.space_s)
+                    .align_y(cosmic::iced::Alignment::Center),
+                );
             }
         }
         if self.busy {
@@ -387,18 +406,15 @@ impl State {
         if let Some(error) = self.error {
             content = content.push(widget::text(error.text()));
         }
-        if matches!(self.step, Step::Server | Step::Authorize) {
-            content = content.push(
-                widget::button::text(fl!("reading-back"))
-                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
-                    .on_press(Message::Back),
-            );
-        }
-        widget::container(widget::scrollable(content))
+        let container = widget::container(widget::scrollable(content))
             .max_width(600)
             .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+        if self.step == Step::Welcome {
+            container.center_y(Length::Fill).into()
+        } else {
+            container.into()
+        }
     }
 }
 

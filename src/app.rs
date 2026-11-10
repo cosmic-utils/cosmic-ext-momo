@@ -514,8 +514,18 @@ impl Application for AppModel {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        if self.onboarding.is_some() {
-            return vec![];
+        if let Some(state) = &self.onboarding {
+            return if matches!(
+                state.step,
+                onboarding::Step::Server | onboarding::Step::Authorize
+            ) {
+                vec![widget::button::text(fl!("setup-back"))
+                    .leading_icon(widget::icon::from_name("go-previous-symbolic"))
+                    .on_press(Message::Onboarding(onboarding::Message::Back))
+                    .into()]
+            } else {
+                vec![]
+            };
         }
         let spacing = cosmic::theme::active().cosmic().spacing;
         let mut items = vec![menu::Item::Button(

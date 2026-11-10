@@ -466,9 +466,7 @@ impl Editor {
                 return cosmic::task::future(async move {
                     message(Message::Saved(
                         serial,
-                        within_timeout(client.delete_list(id), fl!("action-error"))
-                            .await
-                            .map(|_| None),
+                        delete_list(client, id).await.map(|_| None),
                     ))
                 });
             }
@@ -518,6 +516,33 @@ impl Editor {
         Task::none()
     }
 }
+async fn delete_list(client: Client, id: String) -> Result<(), String> {
+    let mut url = reqwest::Url::parse(&client.base_url).map_err(|_| fl!("action-error"))?;
+    url.path_segments_mut()
+        .map_err(|_| fl!("action-error"))?
+        .clear()
+        .extend(["api", "v1", "lists", &id]);
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| fl!("action-error"))?;
+    let response = http
+        .delete(url)
+        .bearer_auth(client.token.unwrap_or_default())
+        .send()
+        .await
+        .map_err(|_| fl!("action-error"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(fl!("session-expired"));
+    }
+    // Mastodon can return an empty object or no content; neither needs decoding.
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(fl!("action-error"))
+    }
+}
+
 async fn membership(
     client: Client,
     id: String,
@@ -557,6 +582,75 @@ async fn membership(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_deletion_uses_http_status_without_decoding_success_bodies() {
+        use std::io::{Read, Write};
+
+        let cases = [
+            ("200 OK", "{}", None),
+            ("200 OK", "", None),
+            ("204 No Content", "", None),
+            ("401 Unauthorized", "{}", Some(fl!("session-expired"))),
+            ("403 Forbidden", "{}", Some(fl!("action-error"))),
+            ("500 Internal Server Error", "{}", Some(fl!("action-error"))),
+        ];
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = Client::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            Some("test-token".into()),
+        );
+        let responses: Vec<_> = cases
+            .iter()
+            .map(|(status, body, _)| (*status, *body))
+            .collect();
+        let server = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline);
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 1024];
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(request.starts_with("DELETE /api/v1/lists/friends HTTP/1.1\r\n"));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-token\r\n"));
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for (_, _, error) in cases {
+                assert_eq!(
+                    delete_list(client.clone(), "friends".into()).await,
+                    error.map_or(Ok(()), Err)
+                );
+            }
+        });
+        server.join().unwrap();
+    }
+
     fn person() -> Account {
         serde_json::from_value(serde_json::json!({"id":"alice","username":"alice","acct":"alice","display_name":"Alice","locked":false,"created_at":"2020-01-01T00:00:00Z","followers_count":0,"following_count":0,"statuses_count":0,"note":"","url":"https://example.org/@alice","avatar":"https://example.org/avatar.png","avatar_static":"","header":"","header_static":"","emojis":[],"fields":[],"bot":false})).unwrap()
     }

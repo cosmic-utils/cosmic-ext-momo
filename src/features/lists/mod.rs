@@ -22,6 +22,7 @@ pub struct Lists {
     mastodon: Client,
     lists: Vec<List>,
     filter: String,
+    show_filter: bool,
     menu: Option<String>,
     loaded: bool,
     error: Option<String>,
@@ -39,6 +40,7 @@ pub enum Message {
     Editor(editor::Message),
     Retry,
     FilterChanged(String),
+    ToggleFilter,
     Failed(u64, String),
     SetLists(u64, Vec<List>),
     Select(String),
@@ -55,6 +57,7 @@ impl Lists {
             mastodon,
             lists: Vec::new(),
             filter: String::new(),
+            show_filter: false,
             menu: None,
             loaded: false,
             error: None,
@@ -113,6 +116,11 @@ impl Lists {
         let header = widget::row![
             widget::text::title2(crate::fl!("lists")),
             widget::space::horizontal(),
+            crate::ui::icon_action(
+                "system-search-symbolic",
+                crate::fl!("lists-filter"),
+                Some(Message::ToggleFilter)
+            ),
             crate::ui::refresh_action(
                 !self.loaded,
                 crate::fl!("feed-refresh"),
@@ -138,10 +146,13 @@ impl Lists {
                 .spacing(8),
             );
         }
-        body = body.push(
-            widget::text_input(crate::fl!("lists-filter"), &self.filter)
-                .on_input(Message::FilterChanged),
-        );
+        if self.show_filter {
+            body = body.push(
+                widget::text_input(crate::fl!("lists-filter"), &self.filter)
+                    .id(filter_id())
+                    .on_input(Message::FilterChanged),
+            );
+        }
         let filter = self.filter.to_lowercase();
         if self.loaded && self.error.is_none() && self.lists.is_empty() {
             body = body.push(crate::ui::empty(
@@ -276,6 +287,14 @@ impl Lists {
 
     pub fn update(&mut self, message: Message) -> Task<app::Message> {
         match message {
+            Message::ToggleFilter => {
+                self.show_filter = !self.show_filter;
+                self.menu = None;
+                if self.show_filter {
+                    return widget::text_input::focus(filter_id());
+                }
+                self.filter.clear();
+            }
             Message::FilterChanged(filter) => {
                 self.filter = filter;
                 self.menu = None;
@@ -387,6 +406,10 @@ impl Lists {
         }
         Subscription::batch(subscriptions)
     }
+}
+
+fn filter_id() -> cosmic::iced::core::widget::Id {
+    cosmic::iced::core::widget::Id::new("lists-filter")
 }
 
 fn fetch_lists(mastodon: Client, request: u64) -> Subscription<Message> {
