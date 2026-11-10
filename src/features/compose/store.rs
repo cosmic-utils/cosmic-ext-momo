@@ -11,18 +11,26 @@ use std::{
 #[derive(Clone)]
 pub struct Store {
     root: Option<PathBuf>,
+    revisions: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    written: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
 }
 impl Default for Store {
     fn default() -> Self {
         Self {
             root: dirs::data_local_dir().map(|dir| dir.join("dev.edfloreshz.Toot").join("drafts")),
+            revisions: Default::default(),
+            written: Default::default(),
         }
     }
 }
 impl Store {
     #[cfg(test)]
     pub fn at(root: PathBuf) -> Self {
-        Self { root: Some(root) }
+        Self {
+            root: Some(root),
+            revisions: Default::default(),
+            written: Default::default(),
+        }
     }
     fn directory(&self, account: &str) -> Result<PathBuf, String> {
         let root = self
@@ -87,7 +95,28 @@ impl Store {
         drafts.retain(|draft| draft.published_id.is_none());
         Ok(drafts)
     }
+    pub fn reserve_save(&self) -> u64 {
+        self.revisions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
     pub fn save(&self, account: &str, drafts: &[State]) -> Result<(), String> {
+        self.save_reserved(account, drafts, self.reserve_save())
+    }
+    pub fn save_reserved(
+        &self,
+        account: &str,
+        drafts: &[State],
+        revision: u64,
+    ) -> Result<(), String> {
+        let mut written = self
+            .written
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if written.get(account).is_some_and(|saved| *saved > revision) {
+            return Ok(());
+        }
+        written.insert(account.to_owned(), revision);
         let dir = self.directory(account)?;
         private_dir(&dir).map_err(|_| fl!("compose-storage-error"))?;
         let bytes = serde_json::to_vec(drafts).map_err(|_| fl!("compose-storage-error"))?;

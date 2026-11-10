@@ -493,3 +493,28 @@ fn interrupted_uploads_are_retryable_after_restoring_a_draft() {
     state.media = vec![media];
     assert!(state.valid(&Limits::default()));
 }
+
+#[test]
+fn delayed_autosaves_cannot_overwrite_a_durable_save_or_restore_a_deleted_draft() {
+    let directory = Temporary::new();
+    let store = store::Store::at(directory.0.clone());
+    let old = State {
+        text: "Old".into(),
+        ..Default::default()
+    };
+    let delayed = store.reserve_save();
+    let current = State {
+        text: "Latest".into(),
+        ..old.clone()
+    };
+    store.save("account", &[current]).unwrap();
+    store
+        .clone()
+        .save_reserved("account", &[old.clone()], delayed)
+        .unwrap();
+    assert_eq!(store.load("account").unwrap()[0].text, "Latest");
+    let delayed = store.reserve_save();
+    store.save("account", &[]).unwrap();
+    store.save_reserved("account", &[old], delayed).unwrap();
+    assert!(store.load("account").unwrap().is_empty());
+}
