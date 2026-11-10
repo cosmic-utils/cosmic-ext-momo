@@ -388,12 +388,14 @@ impl Search {
                 if !account_ids.is_empty() && self.mastodon.is_authenticated() {
                     let mastodon = self.mastodon.clone();
                     tasks.push(cosmic::task::future(async move {
-                        match mastodon.get_relationships(account_ids).await {
+                        match crate::client::within_timeout(
+                            mastodon.get_relationships(account_ids),
+                            crate::fl!("action-error"),
+                        )
+                        .await
+                        {
                             Ok(response) => app::Message::CacheRelationships(response.json),
-                            Err(err) => app::Message::Error(crate::client::api_error(
-                                &err,
-                                crate::fl!("action-error"),
-                            )),
+                            Err(err) => app::Message::Error(err),
                         }
                     }));
                 }
@@ -426,17 +428,20 @@ impl Search {
             Message::ToggleFollowAccount(id, following) => {
                 let mastodon = self.mastodon.clone();
                 return cosmic::task::future(async move {
-                    let result = if following {
-                        mastodon.unfollow_account(id).await
-                    } else {
-                        mastodon.follow_account(id, None).await
-                    };
+                    let result = crate::client::within_timeout(
+                        async {
+                            if following {
+                                mastodon.unfollow_account(id).await
+                            } else {
+                                mastodon.follow_account(id, None).await
+                            }
+                        },
+                        crate::fl!("action-error"),
+                    )
+                    .await;
                     match result {
                         Ok(response) => app::Message::CacheRelationship(response.json),
-                        Err(err) => app::Message::Error(crate::client::api_error(
-                            &err,
-                            crate::fl!("action-error"),
-                        )),
+                        Err(err) => app::Message::Error(err),
                     }
                 });
             }
@@ -450,20 +455,23 @@ impl Search {
             Message::ToggleFollowTag(name, following) => {
                 let mastodon = self.mastodon.clone();
                 return cosmic::task::future(async move {
-                    let result = if following {
-                        mastodon.unfollow_tag(name.clone()).await
-                    } else {
-                        mastodon.follow_tag(name.clone()).await
-                    };
+                    let result = crate::client::within_timeout(
+                        async {
+                            if following {
+                                mastodon.unfollow_tag(name.clone()).await
+                            } else {
+                                mastodon.follow_tag(name.clone()).await
+                            }
+                        },
+                        crate::fl!("action-error"),
+                    )
+                    .await;
                     match result {
                         Ok(response) => app::Message::Search(Message::TagFollowResult(
                             name,
                             response.json.following.unwrap_or(!following),
                         )),
-                        Err(err) => app::Message::Error(crate::client::api_error(
-                            &err,
-                            crate::fl!("action-error"),
-                        )),
+                        Err(err) => app::Message::Error(err),
                     }
                 });
             }
