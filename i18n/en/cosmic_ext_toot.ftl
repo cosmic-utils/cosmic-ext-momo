@@ -31,6 +31,7 @@ authorization-code = Authorization code
 
 ## Context
 profile = Profile
+my-profile = My profile
 status = Status
 
 ## Dialogs
@@ -294,6 +295,7 @@ settings-accounts = Accounts
 settings-switch = Switch
 settings-remove = Remove
 settings-storage = Storage
+settings-cache = Cache
 settings-cache-description = Clear saved feeds for this account and downloaded images for all accounts. Accounts, preferences, and drafts are kept. Open posts remain visible; refresh to download images again.
 settings-clear-cache = Clear cache
 settings-cache-confirm = Clear cached feeds and images from this device?

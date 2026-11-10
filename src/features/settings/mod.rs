@@ -16,7 +16,6 @@ pub enum Message {
     SwitchAccount(usize),
     RemoveAccount(usize),
     AddAccount,
-    Social(crate::features::social::Page),
     ConfirmClearCache,
     CancelClearCache,
     ClearCache,
@@ -73,14 +72,14 @@ pub fn view<'a>(
             widget::toggler(config.hide_replies).on_toggle(Message::ToggleHideReplies),
         ));
 
-    let notification_settings = widget::settings::section()
-        .title(fl!("notifications"))
-        .add(widget::settings::item(
-            fl!("desktop-alerts"),
-            widget::toggler(!config.disable_desktop_notifications)
-                .on_toggle(Message::ToggleDesktopNotifications),
-        ))
-        .add(widget::text(fl!("desktop-alerts-help")));
+    let notification_settings =
+        widget::settings::section()
+            .title(fl!("notifications"))
+            .add(widget::settings::item(
+                fl!("desktop-alerts"),
+                widget::toggler(!config.disable_desktop_notifications)
+                    .on_toggle(Message::ToggleDesktopNotifications),
+            ));
     let accounts_section = sessions
         .iter()
         .enumerate()
@@ -106,9 +105,7 @@ pub fn view<'a>(
         )
         .add(widget::button::suggested(fl!("setup-add-account")).on_press(Message::AddAccount));
 
-    let mut cache_section = widget::settings::section()
-        .title(fl!("settings-storage"))
-        .add(widget::text(fl!("settings-cache-description")));
+    let mut cache_section = widget::settings::section().title(fl!("settings-storage"));
     if confirm_clear {
         cache_section = cache_section
             .add(widget::text(fl!("settings-cache-confirm")))
@@ -122,10 +119,11 @@ pub fn view<'a>(
                 .spacing(8),
             );
     } else {
-        cache_section = cache_section.add(
+        cache_section = cache_section.add(widget::settings::item(
+            fl!("settings-cache"),
             widget::button::standard(fl!("settings-clear-cache"))
                 .on_press(Message::ConfirmClearCache),
-        );
+        ));
     }
     if clearing {
         cache_section = cache_section.add(widget::text(fl!("settings-clearing-cache")));
@@ -135,18 +133,7 @@ pub fn view<'a>(
             .on_press_maybe((!sessions.is_empty()).then_some(Message::VerifySession)),
     );
 
-    let social = widget::column![
-        widget::button::standard(fl!("profile-edit"))
-            .on_press(Message::Social(crate::features::social::Page::EditProfile)),
-        widget::button::standard(fl!("private-conversations")).on_press(Message::Social(
-            crate::features::social::Page::Conversations
-        )),
-        widget::button::standard(fl!("scheduled-posts"))
-            .on_press(Message::Social(crate::features::social::Page::Scheduled)),
-    ]
-    .spacing(8);
     widget::column![
-        (!sessions.is_empty()).then_some(social),
         appearance_settings,
         notification_settings,
         timeline_settings,
