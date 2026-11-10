@@ -180,3 +180,50 @@ fn desktop_alerts_never_include_private_post_or_content_warning_text() {
     assert!(summary.contains("alice"));
     assert!(!summary.contains("secret"));
 }
+
+#[test]
+fn refresh_restarts_paging_across_a_gap_and_preserves_live_arrivals() {
+    let mut inbox = inbox();
+    let item = |id: usize| {
+        notification(
+            &id.to_string(),
+            "follow",
+            "alice",
+            "2026-01-01T12:00:00Z",
+            false,
+        )
+    };
+    inbox
+        .notifications
+        .extend((11..=40).rev().map(|id| id.to_string()));
+    inbox.max_id = Some("11".into());
+    inbox.has_loaded = true;
+    let _ = inbox.update(Message::Recover);
+    let _ = inbox.update(Message::PrependNotification(item(131)));
+    let _ = inbox.update(Message::PageLoaded(
+        inbox.request,
+        Ok(fetch::Page {
+            notifications: (101..=130).rev().map(item).collect(),
+            cursor: Some("101".into()),
+            more: true,
+        }),
+    ));
+    assert_eq!(inbox.max_id.as_deref(), Some("101"));
+    assert_eq!(inbox.notifications.front().map(String::as_str), Some("130"));
+    assert_eq!(inbox.new, ["131".to_string()]);
+    let _ = inbox.update(Message::LoadMore);
+    let _ = inbox.update(Message::PageLoaded(
+        inbox.request,
+        Ok(fetch::Page {
+            notifications: (71..=100).rev().map(item).collect(),
+            cursor: Some("71".into()),
+            more: true,
+        }),
+    ));
+    assert!(inbox.notifications.contains(&"100".into()));
+    assert_eq!(inbox.max_id.as_deref(), Some("71"));
+    let before = inbox.notifications.clone();
+    let _ = inbox.update(Message::Refresh);
+    let _ = inbox.update(Message::PageLoaded(inbox.request, Err("offline".into())));
+    assert_eq!(inbox.notifications, before);
+}

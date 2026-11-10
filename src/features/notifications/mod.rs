@@ -388,26 +388,12 @@ impl Notifications {
                 match result {
                     Ok(page) => {
                         self.error = None;
-                        let keep_cursor = self.load_kind == LoadKind::Refresh
-                            && self.max_id.is_some()
-                            && !page
-                                .notifications
-                                .iter()
-                                .any(|notification| Some(&notification.id) == self.max_id.as_ref());
-                        if self.load_kind == LoadKind::Refresh && page.notifications.is_empty() {
-                            let ids = self.notifications.iter().cloned().collect::<Vec<_>>();
-                            self.remove(&ids);
-                            self.max_id = None;
-                            self.more = false;
-                            tasks.push(cosmic::task::message(app::Message::RemoveNotifications(
-                                ids,
-                            )));
-                        } else if !keep_cursor {
-                            self.more = page.more
-                                && (self.load_kind != LoadKind::Older
-                                    || page.cursor != self.max_id);
-                            self.max_id = page.cursor;
+                        if self.load_kind == LoadKind::Refresh {
+                            self.notifications.clear();
                         }
+                        self.more = page.more
+                            && (self.load_kind != LoadKind::Older || page.cursor != self.max_id);
+                        self.max_id = page.cursor;
                         for notification in page.notifications {
                             if self.dismissed.contains(&notification.id) {
                                 continue;
