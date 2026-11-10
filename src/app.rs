@@ -227,6 +227,8 @@ pub enum Message {
     Status(status::Message),
     Fetch(Vec<String>),
     CacheStatus(Status),
+    FavoriteChanged(Status),
+    BookmarkChanged(Status),
     CacheNotification(Notification),
     RemoveNotifications(Vec<String>),
     CacheRelationship(megalodon::entities::Relationship),
@@ -1709,7 +1711,7 @@ impl Application for AppModel {
                             mastodon.favourite_status(status_id).await
                         };
                         match result {
-                            Ok(response) => Message::CacheStatus(response.json),
+                            Ok(response) => Message::FavoriteChanged(response.json),
                             Err(err) => Message::Error(crate::client::api_error(
                                 &err,
                                 crate::fl!("action-error"),
@@ -1743,7 +1745,7 @@ impl Application for AppModel {
                             mastodon.bookmark_status(status_id).await
                         };
                         match result {
-                            Ok(response) => Message::CacheStatus(response.json),
+                            Ok(response) => Message::BookmarkChanged(response.json),
                             Err(err) => Message::Error(crate::client::api_error(
                                 &err,
                                 crate::fl!("action-error"),
@@ -1767,6 +1769,20 @@ impl Application for AppModel {
                 }
                 self.image_inflight.remove(&url);
                 tasks.push(self.drain_image_queue());
+            }
+            Message::FavoriteChanged(status) => {
+                self.cache.dirty = true;
+                tasks.push(
+                    self.favorites
+                        .update(timeline::Message::CollectionChanged(status)),
+                );
+            }
+            Message::BookmarkChanged(status) => {
+                self.cache.dirty = true;
+                tasks.push(
+                    self.bookmarks
+                        .update(timeline::Message::CollectionChanged(status)),
+                );
             }
             Message::CacheStatus(status) => {
                 self.cache.insert_status(status.clone());

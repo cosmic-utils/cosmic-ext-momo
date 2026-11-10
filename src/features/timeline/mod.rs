@@ -92,6 +92,7 @@ pub enum Message {
     IncomingStatus(Status),
     PageLoaded(u64, Result<fetch::Page, String>),
     PrependStatus(Status),
+    CollectionChanged(Status),
     DeleteStatus(String),
     Status(status::Message),
     LoadMore,
@@ -361,6 +362,19 @@ impl Timeline {
                         }
                     }
                 }
+            }
+            Message::CollectionChanged(status) => {
+                let included = match self.kind {
+                    TimelineKind::Favorites => status.favourited.unwrap_or(false),
+                    TimelineKind::Bookmarks => status.bookmarked.unwrap_or(false),
+                    _ => return Task::none(),
+                };
+                if !included {
+                    self.statuses.retain(|id| id != &status.id);
+                    self.incoming.retain(|id| id != &status.id);
+                }
+                self.begin_load(false);
+                tasks.push(cache_status(status));
             }
             Message::PrependStatus(status) => {
                 self.incoming.retain(|id| id != &status.id);
