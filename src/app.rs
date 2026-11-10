@@ -2190,9 +2190,21 @@ impl AppModel {
         self.dialog_pages
             .retain(|dialog| !matches!(dialog, Dialog::Drafts));
         let previews = state.preview_urls();
+        let uploads: Vec<_> = state
+            .media
+            .iter()
+            .filter(|media| state.accepts_edits() && media.needs_upload())
+            .map(|media| media.id.clone())
+            .collect();
         self.dialog_pages.push_front(Dialog::Compose(state));
         self.persist_active_draft();
-        cosmic::task::message(Message::Fetch(previews))
+        Task::batch(
+            std::iter::once(cosmic::task::message(Message::Fetch(previews))).chain(
+                uploads.into_iter().map(|id| {
+                    cosmic::task::message(Message::Compose(compose::Message::Upload(id)))
+                }),
+            ),
+        )
     }
     fn close_compose_frames(&mut self) {
         self.completion_serial += 1;
@@ -2528,7 +2540,7 @@ impl AppModel {
                 let Some(media) = state
                     .media
                     .iter()
-                    .find(|media| media.id == id && media.stored_name.is_some())
+                    .find(|media| media.id == id && media.needs_upload())
                     .cloned()
                 else {
                     return Task::none();

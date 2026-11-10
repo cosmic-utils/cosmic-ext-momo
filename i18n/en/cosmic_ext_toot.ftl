@@ -402,3 +402,5 @@ list-member-added = Added
 list-members-saved = Member changes are saved automatically.
 list-save-name = Save name
 list-done = Done
+
+compose-retry-upload = Retry upload

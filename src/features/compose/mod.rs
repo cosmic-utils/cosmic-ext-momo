@@ -106,6 +106,11 @@ pub struct Media {
     #[serde(skip)]
     pub error: Option<String>,
 }
+impl Media {
+    pub fn needs_upload(&self) -> bool {
+        self.stored_name.is_some() && self.attachment.is_none() && !self.uploading
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
@@ -934,6 +939,10 @@ fn media_card<'a>(
         cosmic::iced::widget::Stack::with_children(layers)
             .width(72)
             .height(72),
+        (editable && media.needs_upload())
+            .then(|| widget::button::standard(fl!("compose-retry-upload"))
+                .on_press(app::Message::Compose(Message::Upload(media.id.clone())))),
+        media.error.as_ref().map(widget::text::caption),
         crate::ui::icon_action(
             "window-close-symbolic",
             fl!("compose-remove"),
