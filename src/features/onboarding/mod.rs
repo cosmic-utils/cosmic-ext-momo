@@ -288,13 +288,7 @@ impl State {
             Step::Welcome => {
                 content = content
                     .align_x(cosmic::iced::Alignment::Center)
-                    .push(
-                        widget::icon(widget::icon::from_svg_bytes(
-                            include_bytes!("../../../res/icons/hicolor/scalable/apps/icon.svg")
-                                .as_slice(),
-                        ))
-                        .size(96),
-                    )
+                    .push(widget::icon(crate::ui::app_icon()).size(96))
                     .push(
                         widget::text::title1(fl!("setup-welcome"))
                             .align_x(cosmic::iced::alignment::Horizontal::Center),

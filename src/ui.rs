@@ -7,6 +7,13 @@ use cosmic::{
 pub const CONTENT_WIDTH: u32 = 800;
 pub const GAP: u16 = 16;
 
+/// Load the app icon without requiring installation in the host icon theme.
+pub fn app_icon() -> widget::icon::Handle {
+    widget::icon::from_svg_bytes(
+        include_bytes!("../res/icons/hicolor/scalable/apps/icon.svg").as_slice(),
+    )
+}
+
 pub fn empty<'a, M: Clone + 'static>(
     icon: &str,
     title: String,

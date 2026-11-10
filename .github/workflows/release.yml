@@ -31,7 +31,7 @@ jobs:
             libfontconfig-dev libfreetype-dev libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-tools \
-            desktop-file-utils appstream dbus-daemon patchelf file
+            desktop-file-utils appstream dbus-daemon patchelf file librsvg2-bin
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: appimage
@@ -58,6 +58,8 @@ jobs:
           appdir="$RUNNER_TEMP/Momo.AppDir"
           just rootdir="$appdir" prefix=/usr install
           install -Dm0644 LICENSE "$appdir/usr/share/licenses/cosmic-ext-momo/LICENSE"
+          rsvg-convert -w 256 -h 256 res/icons/hicolor/scalable/apps/icon.svg -o "$appdir/dev.edfloreshz.Momo.png"
+          ln -s dev.edfloreshz.Momo.png "$appdir/.DirIcon"
           mkdir -p dist
           cd dist
           export VERSION="${RELEASE_TAG//\//-}"
@@ -87,6 +89,13 @@ jobs:
           "$image" --appimage-extract > /dev/null
           test -x squashfs-root/AppRun
           test -x squashfs-root/usr/bin/cosmic-ext-momo
+          test -s squashfs-root/.DirIcon
+          test -s squashfs-root/dev.edfloreshz.Momo.png
+          test -s squashfs-root/dev.edfloreshz.Momo.svg
+          test -s squashfs-root/usr/share/icons/hicolor/scalable/apps/dev.edfloreshz.Momo.svg
+          cmp squashfs-root/.DirIcon squashfs-root/dev.edfloreshz.Momo.png
+          file --mime-type squashfs-root/dev.edfloreshz.Momo.png | grep -F 'image/png'
+          grep -Fx 'Icon=dev.edfloreshz.Momo' squashfs-root/dev.edfloreshz.Momo.desktop
           test -f squashfs-root/usr/share/metainfo/dev.edfloreshz.Momo.metainfo.xml
           test -f squashfs-root/usr/lib/gstreamer-1.0/libgstvpx.so
           test -f squashfs-root/usr/lib/gstreamer-1.0/libgstlibav.so

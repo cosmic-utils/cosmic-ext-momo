@@ -5,6 +5,7 @@ Exec=cosmic-ext-momo
 Terminal=false
 Type=Application
 StartupNotify=true
+StartupWMClass=dev.edfloreshz.Momo
 Icon=dev.edfloreshz.Momo
 Categories=Network;X-COSMIC;
 Keywords=momo;mastodon;fediverse;
