@@ -364,6 +364,10 @@ impl Lists {
         Task::none()
     }
 
+    pub fn timeline(&self) -> Option<&Timeline> {
+        self.selected.as_ref()
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![];
         if self.is_authenticated() && !self.loaded {

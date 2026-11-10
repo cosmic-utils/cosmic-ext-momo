@@ -17,6 +17,9 @@ pub const MAX_NOTIFICATIONS: usize = 100;
 /// Cap on how many distinct hashtag/list snapshot files are kept.
 const MAX_SCOPED_FILES: usize = 5;
 
+pub const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
 fn cache_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|dir| dir.join(AppModel::APP_ID))
 }
@@ -219,7 +222,11 @@ fn image_cache_path(url: &str) -> Option<PathBuf> {
 }
 
 pub fn load_image(url: &str) -> Option<Vec<u8>> {
-    std::fs::read(image_cache_path(url)?).ok()
+    let path = image_cache_path(url)?;
+    if std::fs::metadata(&path).ok()?.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    std::fs::read(path).ok()
 }
 
 pub fn save_image(url: &str, bytes: &[u8], epoch: u64) {
@@ -233,7 +240,38 @@ fn save_image_at(path: PathBuf, bytes: &[u8], epoch: u64) {
     if epoch != image_epoch() {
         return;
     }
-    write_image(path, bytes);
+    if bytes.len() as u64 <= MAX_IMAGE_BYTES {
+        let parent = path.parent().map(std::path::Path::to_path_buf);
+        write_image(path, bytes);
+        if let Some(parent) = parent {
+            prune_images_at(&parent, MAX_IMAGE_CACHE_BYTES);
+        }
+    }
+}
+
+fn prune_images_at(directory: &std::path::Path, budget: u64) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_file()
+                .then(|| (entry.path(), metadata.len(), metadata.modified().ok()))
+        })
+        .collect();
+    let mut bytes: u64 = files.iter().map(|(_, size, _)| size).sum();
+    files.sort_by_key(|(_, _, modified)| *modified);
+    for (path, size, _) in files {
+        if bytes <= budget {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            bytes = bytes.saturating_sub(size);
+        }
+    }
 }
 
 fn write_image(path: PathBuf, bytes: &[u8]) {
@@ -324,6 +362,30 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn image_cache_removes_old_downloads_to_stay_within_its_byte_budget() {
+        let root = std::env::temp_dir().join(format!("toot-images-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        for (index, name) in ["old", "recent", "new"].iter().enumerate() {
+            let path = root.join(name);
+            std::fs::write(&path, b"data").unwrap();
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(index as u64),
+                )
+                .unwrap();
+        }
+        prune_images_at(&root, 8);
+        assert!(!root.join("old").exists());
+        assert!(root.join("recent").exists());
+        assert!(root.join("new").exists());
+        prune_images_at(&root, 0);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn an_image_download_from_before_cleanup_cannot_write_back_to_disk() {
         let root = std::env::temp_dir().join(format!("toot-image-test-{}", uuid::Uuid::new_v4()));

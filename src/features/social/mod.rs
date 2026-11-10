@@ -125,6 +125,17 @@ impl Social {
             app::Message::Social(Message::Loaded(serial, fetch(client, page, cursor).await))
         })
     }
+    pub fn statuses(&self) -> impl Iterator<Item = &megalodon::entities::Status> {
+        self.conversations
+            .iter()
+            .filter_map(|item| item.last_status.as_ref())
+    }
+    pub fn accounts(&self) -> impl Iterator<Item = &Account> {
+        self.people
+            .iter()
+            .chain(self.conversations.iter().flat_map(|item| &item.accounts))
+    }
+
     pub fn view<'a>(&'a self, cache: &'a Cache) -> Element<'a, app::Message> {
         let mut body = widget::column![]
             .spacing(12)
@@ -333,6 +344,21 @@ impl Social {
                                 None
                             }
                         };
+                        let excess = self
+                            .people
+                            .len()
+                            .saturating_sub(crate::cache::MAX_RETAINED_ITEMS);
+                        self.people.drain(..excess);
+                        let excess = self
+                            .conversations
+                            .len()
+                            .saturating_sub(crate::cache::MAX_RETAINED_ITEMS);
+                        self.conversations.drain(..excess);
+                        let excess = self
+                            .scheduled
+                            .len()
+                            .saturating_sub(crate::cache::MAX_RETAINED_ITEMS);
+                        self.scheduled.drain(..excess);
                         self.more = next.is_some() && (!self.older || next != self.cursor);
                         self.cursor = next;
                         return Task::batch(

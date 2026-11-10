@@ -9,6 +9,9 @@ use megalodon::entities::{Account, Notification, Relationship, Status};
 use crate::config::FeedDensity;
 use crate::error::Error;
 
+pub const MAX_RETAINED_ITEMS: usize = 500;
+pub const MAX_BUFFERED_ITEMS: usize = 100;
+
 #[derive(Debug, Clone)]
 pub struct Cache {
     pub deleted: HashSet<String>,
@@ -91,21 +94,23 @@ impl Cache {
                 **reblog = current.clone();
             }
         }
-        // Keep embedded copies current too, including the copies saved in snapshots.
-        for cached in self.statuses.values_mut() {
-            if let Some(reblog) = &mut cached.reblog {
-                if reblog.id == status.id {
-                    **reblog = status.clone();
-                }
-            }
-        }
-        for notification in self.notifications.values_mut() {
-            if let Some(post) = &mut notification.status {
-                if post.id == status.id {
-                    *post = status.clone();
-                } else if let Some(reblog) = &mut post.reblog {
+        // New IDs cannot have embedded copies: boosts insert their originals first.
+        if self.statuses.contains_key(&status.id) {
+            for cached in self.statuses.values_mut() {
+                if let Some(reblog) = &mut cached.reblog {
                     if reblog.id == status.id {
                         **reblog = status.clone();
+                    }
+                }
+            }
+            for notification in self.notifications.values_mut() {
+                if let Some(post) = &mut notification.status {
+                    if post.id == status.id {
+                        *post = status.clone();
+                    } else if let Some(reblog) = &mut post.reblog {
+                        if reblog.id == status.id {
+                            **reblog = status.clone();
+                        }
                     }
                 }
             }
@@ -171,6 +176,56 @@ impl Cache {
         self.handles.insert(url, handle);
     }
 
+    pub fn retain_referenced(
+        &mut self,
+        mut statuses: HashSet<String>,
+        notifications: &HashSet<String>,
+        mut images: HashSet<String>,
+        mut accounts: HashSet<String>,
+    ) -> HashSet<String> {
+        self.notifications
+            .retain(|id, _| notifications.contains(id));
+        for notification in self.notifications.values() {
+            if let Some(post) = &notification.status {
+                statuses.insert(post.id.clone());
+            }
+            if let Some(account) = &notification.account {
+                accounts.insert(account.id.clone());
+            }
+            images.extend(extract_notification_images(notification));
+        }
+        let mut pending: Vec<_> = statuses.iter().cloned().collect();
+        while let Some(id) = pending.pop() {
+            if let Some(post) = self.statuses.get(&id) {
+                if let Some(original) = &post.reblog {
+                    if statuses.insert(original.id.clone()) {
+                        pending.push(original.id.clone());
+                    }
+                }
+            }
+        }
+        self.statuses.retain(|id, _| statuses.contains(id));
+        let mut polls = HashSet::new();
+        for post in self.statuses.values() {
+            images.extend(extract_status_images(post));
+            accounts.insert(post.account.id.clone());
+            if let Some(poll) = &post.poll {
+                polls.insert(poll.id.clone());
+            }
+        }
+        self.handles.retain(|url, _| images.contains(url));
+        self.relationships.retain(|id, _| accounts.contains(id));
+        self.reading.warnings.retain(|id| statuses.contains(id));
+        self.reading.media.retain(|id| statuses.contains(id));
+        self.reading
+            .filter_reveals
+            .retain(|(id, _)| statuses.contains(id));
+        self.reading.polls.retain(|id, _| polls.contains(id));
+        self.reading.choices.retain(|id, _| polls.contains(id));
+        self.reading.poll_errors.retain(|id, _| polls.contains(id));
+        images
+    }
+
     pub fn clear(&mut self) {
         self.deleted.clear();
         self.reading = crate::features::reading::State::new(false);
@@ -208,7 +263,22 @@ pub async fn get(url: impl ToString, epoch: u64) -> Result<Handle, Error> {
         .await?;
     match response.error_for_status() {
         Ok(response) => {
-            let bytes = response.bytes().await?.to_vec();
+            if response
+                .content_length()
+                .is_some_and(|length| length > crate::persistence::MAX_IMAGE_BYTES)
+            {
+                return Err(Error::ImageTooLarge);
+            }
+            let mut response = response;
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                if bytes.len().saturating_add(chunk.len()) as u64
+                    > crate::persistence::MAX_IMAGE_BYTES
+                {
+                    return Err(Error::ImageTooLarge);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
             save_cached_image(url, bytes.clone(), epoch);
             Ok(Handle::from_bytes(bytes))
         }
