@@ -202,6 +202,7 @@ pub enum Message {
     ReportForward(bool),
     SubmitReport,
     ReportSubmitted(u64, Result<(), String>),
+    MyProfile,
     StartOnboarding,
     Onboarding(onboarding::Message),
     Open(String),
@@ -474,6 +475,11 @@ impl Application for AppModel {
             MenuAction::Settings,
         )];
         if self.mastodon.is_authenticated() {
+            items.push(menu::Item::Button(
+                fl!("my-profile"),
+                Some(widget::icon::from_name("avatar-default-symbolic").into()),
+                MenuAction::MyProfile,
+            ));
             items.push(menu::Item::Button(
                 fl!("private-conversations"),
                 Some(widget::icon::from_name("mail-message-new-symbolic").into()),
@@ -1411,9 +1417,6 @@ impl Application for AppModel {
                 tasks.push(self.social.update(message, self.mastodon.clone()))
             }
             Message::Settings(message) => match message {
-                settings::Message::Social(page) => {
-                    tasks.push(self.update(Message::ToggleContextPage(ContextPage::Social(page))))
-                }
                 settings::Message::ToggleDesktopNotifications(enabled) => {
                     self.config.disable_desktop_notifications = !enabled;
                     if let Some(handler) = &self.handler {
@@ -2052,6 +2055,13 @@ impl Application for AppModel {
                 self.toasts.remove(id);
             }
             Message::FlushCache => self.flush_cache_to_disk(),
+            Message::MyProfile => {
+                if let Some(account) = self.cache.me.clone() {
+                    tasks.push(
+                        self.update(Message::ToggleContextPage(ContextPage::Account(account))),
+                    );
+                }
+            }
             Message::None => (),
         }
         self.sync_video();
@@ -3509,6 +3519,7 @@ impl ContextPage {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
+    MyProfile,
     Conversations,
     Scheduled,
     Drafts,
@@ -3522,6 +3533,7 @@ impl menu::action::MenuAction for MenuAction {
 
     fn message(&self) -> Self::Message {
         match self {
+            MenuAction::MyProfile => Message::MyProfile,
             MenuAction::Drafts => Message::Compose(compose::Message::Drafts),
             MenuAction::Logout => Message::Dialog(DialogAction::Open(Dialog::Logout)),
             MenuAction::Conversations => Message::ToggleContextPage(ContextPage::Social(
