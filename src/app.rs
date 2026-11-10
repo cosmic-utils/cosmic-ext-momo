@@ -127,6 +127,7 @@ pub struct AppModel {
     social: crate::features::social::Social,
     video: Option<crate::media::Player>,
     video_url: Option<String>,
+    gallery_image_url: Option<String>,
     video_failed: bool,
     reader_request: u64,
     filter_request: u64,
@@ -378,6 +379,7 @@ impl Application for AppModel {
             generation: 0,
             video: None,
             video_url: None,
+            gallery_image_url: None,
             video_failed: false,
             stream_state: crate::streaming::State::Connecting,
             session_expired: false,
@@ -1136,6 +1138,7 @@ impl Application for AppModel {
             Message::CacheCleared(result) => {
                 self.clearing_cache = false;
                 self.confirm_clear_cache = false;
+                self.gallery_image_url = None;
                 self.cache.handles.clear();
                 self.image_queue.clear();
                 self.image_inflight.clear();
@@ -2096,6 +2099,19 @@ impl Application for AppModel {
             Message::None => (),
         }
         self.sync_video();
+        let image_url = match self.dialog_pages.front() {
+            Some(Dialog::Media(items, index)) => items
+                .get(*index)
+                .filter(|item| !item.video)
+                .map(|item| item.url.clone()),
+            _ => None,
+        };
+        if self.gallery_image_url != image_url {
+            self.gallery_image_url = image_url.clone();
+            if let Some(url) = image_url {
+                tasks.push(cosmic::task::message(Message::Fetch(vec![url])));
+            }
+        }
         scoped_task(Task::batch(tasks), self.generation)
     }
 }
@@ -3218,12 +3234,7 @@ impl AppModel {
             .video
             .as_ref()
             .and_then(|video| video.frame.as_ref())
-            .or_else(|| {
-                attachment
-                    .preview
-                    .as_ref()
-                    .and_then(|url| self.cache.handles.get(url))
-            });
+            .or_else(|| attachment.cached_image(&self.cache.handles));
         let image: Element<'_, Message> = if attachment.video && failed {
             widget::text(fl!("media-playback-error")).into()
         } else if let Some(handle) = handle {

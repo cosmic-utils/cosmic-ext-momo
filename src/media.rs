@@ -13,6 +13,18 @@ pub struct Attachment {
 }
 
 impl Attachment {
+    pub fn cached_image<'a>(
+        &self,
+        handles: &'a std::collections::HashMap<String, Handle>,
+    ) -> Option<&'a Handle> {
+        if !self.video {
+            if let Some(original) = handles.get(&self.url) {
+                return Some(original);
+            }
+        }
+        self.preview.as_ref().and_then(|url| handles.get(url))
+    }
+
     pub fn from_media(media: &megalodon::entities::Attachment) -> Option<Self> {
         use megalodon::entities::attachment::AttachmentType;
         let (video, looping) = match media.r#type {
@@ -194,6 +206,28 @@ impl Drop for Player {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn gallery_prefers_the_selected_original_and_keeps_previews_while_loading() {
+        let mut handles = std::collections::HashMap::new();
+        let mut item = Attachment {
+            url: "original".into(),
+            preview: Some("preview".into()),
+            description: None,
+            video: false,
+            looping: false,
+        };
+        let preview = Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+        let original = Handle::from_rgba(1, 1, vec![255, 255, 255, 255]);
+        handles.insert("preview".into(), preview.clone());
+        assert_eq!(item.cached_image(&handles).unwrap().id(), preview.id());
+        handles.insert("original".into(), original.clone());
+        assert_eq!(item.cached_image(&handles).unwrap().id(), original.id());
+        item.preview = None;
+        assert_eq!(item.cached_image(&handles).unwrap().id(), original.id());
+        item.url = "next".into();
+        assert!(item.cached_image(&handles).is_none());
+    }
 
     #[test]
     fn gallery_includes_videos_without_previews_and_preserves_media_types() {
